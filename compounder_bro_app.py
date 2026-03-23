@@ -293,9 +293,9 @@ if page == "🏠 Dashboard":
             marker_color=COLORS[:len(names_r)],
             hovertemplate="%{x}<br>Revenue: $%{y:.2f}B<extra></extra>",
         ))
-        fig.update_layout(**BASE_LAYOUT, height=320, showlegend=False,
-                          yaxis=dict(title="Revenue ($B)", showgrid=True,
-                                     gridcolor="#2e3a52", color="#8892a4"))
+        layout = {**BASE_LAYOUT, "height": 320, "showlegend": False,
+                  "yaxis": dict(title="Revenue ($B)", showgrid=True, gridcolor="#2e3a52", color="#8892a4")}
+        fig.update_layout(**layout)
         st.plotly_chart(fig, use_container_width=True)
 
     # Margins comparison
@@ -310,9 +310,9 @@ if page == "🏠 Dashboard":
         fig2.add_trace(go.Bar(name="Gross Margin",     x=mcos, y=gms, marker_color="#4a9eff"))
         fig2.add_trace(go.Bar(name="Operating Margin", x=mcos, y=ops, marker_color="#22c55e"))
         fig2.add_trace(go.Bar(name="Net Margin",       x=mcos, y=nms, marker_color="#f0a500"))
-        fig2.update_layout(**BASE_LAYOUT, barmode="group", height=350,
-                           yaxis=dict(title="Margin (%)", showgrid=True,
-                                      gridcolor="#2e3a52", color="#8892a4"))
+        layout2 = {**BASE_LAYOUT, "barmode": "group", "height": 350,
+                   "yaxis": dict(title="Margin (%)", showgrid=True, gridcolor="#2e3a52", color="#8892a4")}
+        fig2.update_layout(**layout2)
         st.plotly_chart(fig2, use_container_width=True)
 
     st.info("👈 Select **Company Deep Dive** in the sidebar to explore any company in detail.")
