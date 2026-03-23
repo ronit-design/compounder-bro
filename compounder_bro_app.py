@@ -517,6 +517,15 @@ else:
     # Raw data
     with st.expander("🗂️ Raw Data"):
         t1, t2, t3 = st.tabs(["Income Statement", "Balance Sheet", "Cash Flow"])
-        with t1: st.dataframe(inc, use_container_width=True)
-        with t2: st.dataframe(bs,  use_container_width=True) if not bs.empty else st.info("No data")
-        with t3: st.dataframe(cf,  use_container_width=True) if not cf.empty else st.info("No data")
+        with t1:
+            st.dataframe(inc, use_container_width=True)
+        with t2:
+            if not bs.empty:
+                st.dataframe(bs, use_container_width=True)
+            else:
+                st.info("No data")
+        with t3:
+            if not cf.empty:
+                st.dataframe(cf, use_container_width=True)
+            else:
+                st.info("No data")
