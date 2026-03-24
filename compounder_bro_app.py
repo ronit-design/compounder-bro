@@ -681,6 +681,17 @@ else:
     cfo_s    = safe(cf,  "Cash from Operations") if not cf.empty else pd.Series(dtype=float)
     nd_s     = safe(bs,  "Net Debt")             if not bs.empty else pd.Series(dtype=float)
 
+    # Working capital series — all from balance sheet
+    ar_s     = safe(bs, "Accounts & Notes Receivable", "Accounts Receivable") if not bs.empty else pd.Series(dtype=float)
+    inv_s    = safe(bs, "Inventories")                                         if not bs.empty else pd.Series(dtype=float)
+    ap_s     = safe(bs, "Accounts Payable", "Accounts Payable & Accruals")     if not bs.empty else pd.Series(dtype=float)
+    ca_s     = safe(bs, "Total Current Assets")                                if not bs.empty else pd.Series(dtype=float)
+    cl_s     = safe(bs, "Total Current Liabilities")                           if not bs.empty else pd.Series(dtype=float)
+    cogs_s   = safe(inc, "Cost of Goods Sold", "Cost of Goods and Services Sold")
+
+    # Align balance sheet years to income statement years for consistency
+    bs_years = bs["Date"].dt.year.astype(str).tolist() if not bs.empty and "Date" in bs.columns else years
+
     rev_list   = rev_s.tolist()
     rev_growth = [None] + [
         (rev_list[i] - rev_list[i-1]) / abs(rev_list[i-1]) * 100
@@ -713,7 +724,7 @@ else:
     st.markdown("<br>", unsafe_allow_html=True)
 
     # ── Tabs — no emojis ──────────────────────────────────────────────────────
-    tab1, tab2, tab3, tab4 = st.tabs(["Revenue", "Margins", "Cash Flow", "Valuation"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["Revenue", "Margins", "Cash Flow", "Valuation", "Working Capital"])
 
     # TAB 1 — Revenue
     with tab1:
@@ -874,6 +885,135 @@ else:
                          column_config={c: st.column_config.TextColumn(c, width="small") for c in val_df.columns if c != "Year"})
         else:
             st.markdown('<span style="color:#999;font-size:0.82rem">Stock price required to calculate multiples. Add a Stock Price column to your Google Sheet.</span>', unsafe_allow_html=True)
+
+    # TAB 5 — Working Capital
+    with tab5:
+
+        def days(numerator_s, denominator_s, label):
+            """Calculate a days metric year by year. Returns list aligned to bs_years."""
+            result = []
+            for i in range(len(bs_years)):
+                try:
+                    num = float(numerator_s.iloc[i])   if i < len(numerator_s)   and pd.notna(numerator_s.iloc[i])   else None
+                    den = float(denominator_s.iloc[i]) if i < len(denominator_s) and pd.notna(denominator_s.iloc[i]) else None
+                    if num is not None and den is not None and den > 0:
+                        result.append((num / den) * 365)
+                    else:
+                        result.append(None)
+                except:
+                    result.append(None)
+            return result
+
+        dso_list  = days(ar_s,  rev_s,  "DSO")
+        inv_list  = days(inv_s, cogs_s, "Inventory Days")
+        dpo_list  = days(ap_s,  cogs_s, "DPO")
+
+        # CCC — only where all three components exist
+        ccc_list = []
+        for i in range(len(bs_years)):
+            dso = dso_list[i]; inv = inv_list[i]; dpo = dpo_list[i]
+            if dso is not None and inv is not None and dpo is not None:
+                ccc_list.append(dso + inv - dpo)
+            elif dso is not None and dpo is not None:
+                # Some companies have no inventory (service businesses)
+                ccc_list.append(dso - dpo)
+            else:
+                ccc_list.append(None)
+
+        # NWC — year by year
+        nwc_list = []
+        for i in range(len(bs_years)):
+            try:
+                ca = float(ca_s.iloc[i]) if i < len(ca_s) and pd.notna(ca_s.iloc[i]) else None
+                cl = float(cl_s.iloc[i]) if i < len(cl_s) and pd.notna(cl_s.iloc[i]) else None
+                nwc_list.append(ca - cl if ca is not None and cl is not None else None)
+            except:
+                nwc_list.append(None)
+
+        # ── KPI summary row — latest year ──────────────────────────────────────
+        def latest_days(lst):
+            vals = [v for v in lst if v is not None]
+            return vals[-1] if vals else None
+
+        def fmt_days(val):
+            if val is None: return "—"
+            return f"{val:.0f} days"
+
+        def fmt_days_delta(lst):
+            vals = [v for v in lst if v is not None]
+            if len(vals) < 2: return None
+            return vals[-1] - vals[-2]  # absolute change in days, not %
+
+        w1, w2, w3, w4, w5 = st.columns(5)
+
+        dso_l  = latest_days(dso_list)
+        inv_l  = latest_days(inv_list)
+        dpo_l  = latest_days(dpo_list)
+        ccc_l  = latest_days(ccc_list)
+        nwc_l  = latest([v for v in pd.Series(nwc_list)] if any(v is not None for v in nwc_list) else pd.Series(dtype=float))
+
+        def wc_kpi(col, label, val_str, delta_days=None):
+            if delta_days is not None:
+                sign  = "+" if delta_days >= 0 else ""
+                cls   = "delta-up" if delta_days <= 0 else "delta-down"  # fewer days = better for DSO/CCC
+                d_html = f'<span class="metric-delta {cls}">{sign}{delta_days:.0f} days YoY</span>'
+            else:
+                d_html = ""
+            col.markdown(f"""
+            <div class="metric-block">
+                <div class="metric-label">{label}</div>
+                <div class="metric-value">{val_str}</div>
+                {d_html}
+            </div>""", unsafe_allow_html=True)
+
+        wc_kpi(w1, "DSO",            fmt_days(dso_l),  fmt_days_delta(dso_list))
+        wc_kpi(w2, "Inventory Days", fmt_days(inv_l),  fmt_days_delta(inv_list))
+        wc_kpi(w3, "DPO",            fmt_days(dpo_l),  fmt_days_delta(dpo_list))
+        wc_kpi(w4, "Cash Cycle",     fmt_days(ccc_l),  fmt_days_delta(ccc_list))
+        wc_kpi(w5, "NWC (Latest)",   fmt_currency(nwc_l))
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # ── Days trend chart ───────────────────────────────────────────────────
+        days_ys, days_names = [], []
+        if any(v for v in dso_list  if v is not None): days_ys.append(dso_list);  days_names.append("DSO")
+        if any(v for v in inv_list  if v is not None): days_ys.append(inv_list);  days_names.append("Inventory Days")
+        if any(v for v in dpo_list  if v is not None): days_ys.append(dpo_list);  days_names.append("DPO")
+        if any(v for v in ccc_list  if v is not None): days_ys.append(ccc_list);  days_names.append("Cash Cycle")
+
+        if days_ys:
+            fig_wc = make_line(bs_years, days_ys, days_names, "Working Capital Days", height=320, suffix=" days")
+            fig_wc.update_layout(yaxis=dict(ticksuffix=" d", showgrid=True, gridcolor=C_BORDER2,
+                                            tickfont=dict(size=10, color=C_TEXT3),
+                                            zeroline=True, zerolinecolor=C_BORDER,
+                                            showline=False))
+            st.plotly_chart(fig_wc, use_container_width=True, config={"displayModeBar": False})
+        else:
+            st.markdown('<span style="color:#999;font-size:0.82rem">Insufficient balance sheet data to calculate working capital days.</span>', unsafe_allow_html=True)
+
+        # ── NWC trend chart ────────────────────────────────────────────────────
+        st.markdown("<br>", unsafe_allow_html=True)
+        if any(v for v in nwc_list if v is not None):
+            fig_nwc = make_bar(bs_years,
+                               [v/1e9 if v is not None else None for v in nwc_list],
+                               "Net Working Capital  ($B)", height=260)
+            fig_nwc.update_layout(yaxis=dict(tickprefix="$", ticksuffix="B", showgrid=True,
+                                              gridcolor=C_BORDER2, tickfont=dict(size=10, color=C_TEXT3),
+                                              zeroline=True, zerolinecolor=C_BORDER, showline=False))
+            st.plotly_chart(fig_nwc, use_container_width=True, config={"displayModeBar": False})
+
+        # ── Historical table ───────────────────────────────────────────────────
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown('<span class="section-label">Historical</span>', unsafe_allow_html=True)
+
+        wc_df = pd.DataFrame({"Year": bs_years})
+        wc_df["DSO"]            = [fmt_days(v) for v in dso_list]
+        wc_df["Inventory Days"] = [fmt_days(v) for v in inv_list]
+        wc_df["DPO"]            = [fmt_days(v) for v in dpo_list]
+        wc_df["Cash Cycle"]     = [fmt_days(v) for v in ccc_list]
+        wc_df["NWC"]            = [fmt_currency(v) for v in nwc_list]
+        st.dataframe(wc_df.set_index("Year").T, use_container_width=True,
+                     column_config={c: st.column_config.TextColumn(c, width="small") for c in wc_df.columns if c != "Year"})
 
     # Raw data — tucked away, quiet
     st.markdown("<br>", unsafe_allow_html=True)
