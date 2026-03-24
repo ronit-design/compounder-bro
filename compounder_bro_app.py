@@ -384,7 +384,7 @@ def delta_html(val):
     return f'<span class="metric-delta {cls}">{sign}{val:.1f}%</span>'
 
 
-# ── Chart theme ───────────────────────────────────────────────────────────────
+# Chart theme
 CHART_BASE = dict(
     paper_bgcolor=C_BG,
     plot_bgcolor=C_BG,
@@ -395,15 +395,6 @@ CHART_BASE = dict(
         showline=False,
         tickfont=dict(size=10, color=C_TEXT3),
         tickcolor=C_BORDER,
-    ),
-    yaxis=dict(
-        showgrid=True,
-        gridcolor=C_BORDER2,
-        gridwidth=1,
-        zeroline=False,
-        showline=False,
-        tickfont=dict(size=10, color=C_TEXT3),
-        tickcolor="rgba(0,0,0,0)",
     ),
     margin=dict(l=0, r=0, t=28, b=0),
     hovermode="x unified",
@@ -434,11 +425,14 @@ def make_bar(x, y, title, height=280, color=C_ACCENT):
         marker_line_width=0,
         hovertemplate="%{x}<br>%{y:,.1f}<extra></extra>",
     ))
+    fig.update_layout(**CHART_BASE)
     fig.update_layout(
-        **CHART_BASE,
         height=height,
         title=dict(text=title, font=dict(size=11, color=C_TEXT2, weight=500), x=0, xanchor="left"),
         bargap=0.35,
+        yaxis=dict(showgrid=True, gridcolor=C_BORDER2, gridwidth=1,
+                   zeroline=False, showline=False,
+                   tickfont=dict(size=10, color=C_TEXT3), tickcolor="rgba(0,0,0,0)"),
     )
     return fig
 
@@ -454,12 +448,16 @@ def make_line(x, ys, names, title, height=300, suffix=""):
             hovertemplate=f"%{{x}}<br>{name}: %{{y:,.1f}}{suffix}<extra></extra>",
             connectgaps=False,
         ))
+    fig.update_layout(**CHART_BASE)
     fig.update_layout(
-        **CHART_BASE,
         height=height,
         title=dict(text=title, font=dict(size=11, color=C_TEXT2, weight=500), x=0, xanchor="left"),
+        yaxis=dict(showgrid=True, gridcolor=C_BORDER2, gridwidth=1,
+                   zeroline=False, showline=False,
+                   tickfont=dict(size=10, color=C_TEXT3), tickcolor="rgba(0,0,0,0)"),
     )
     return fig
+
 
 
 # ── KPI block ─────────────────────────────────────────────────────────────────
@@ -565,11 +563,9 @@ if page == "Overview":
             marker_line_width=0,
             hovertemplate="%{x}<br>$%{y:.1f}B<extra></extra>",
         ))
+        fig_rev.update_layout(**CHART_BASE)
         fig_rev.update_layout(
-            **CHART_BASE,
-            height=260,
-            bargap=0.45,
-            showlegend=False,
+            height=260, bargap=0.45, showlegend=False,
             yaxis=dict(showgrid=True, gridcolor=C_BORDER2, ticksuffix="B",
                        tickprefix="$", tickfont=dict(size=10, color=C_TEXT3),
                        zeroline=False, showline=False),
@@ -590,12 +586,9 @@ if page == "Overview":
         fig_m.add_trace(go.Bar(name="Net", x=m_names, y=m_npm,
                                marker_color="#BBBBBB", marker_line_width=0,
                                hovertemplate="%{x}<br>Net: %{y:.1f}%<extra></extra>"))
+        fig_m.update_layout(**CHART_BASE)
         fig_m.update_layout(
-            **CHART_BASE,
-            height=260,
-            barmode="group",
-            bargap=0.35,
-            bargroupgap=0.08,
+            height=260, barmode="group", bargap=0.35, bargroupgap=0.08,
             yaxis=dict(showgrid=True, gridcolor=C_BORDER2, ticksuffix="%",
                        tickfont=dict(size=10, color=C_TEXT3),
                        zeroline=False, showline=False),
@@ -776,8 +769,9 @@ else:
                     line=dict(color=C_ACCENT, width=1.5),
                     hovertemplate="%{x|%d %b %Y}<br>$%{y:.2f}<extra></extra>",
                 ))
+                fig_px.update_layout(**CHART_BASE)
                 fig_px.update_layout(
-                    **CHART_BASE, height=300, showlegend=False,
+                    height=300, showlegend=False,
                     yaxis=dict(tickprefix="$", showgrid=True, gridcolor=C_BORDER2,
                                tickfont=dict(size=10, color=C_TEXT3), zeroline=False, showline=False),
                 )
