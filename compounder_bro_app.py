@@ -554,14 +554,31 @@ if page == "Overview":
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # Revenue chart — all companies
+    # Rebuild raw numeric data for charts from the sheet directly
+    chart_rev, chart_gp, chart_oi, chart_ni, chart_opm, chart_npm, chart_names = [], [], [], [], [], [], []
+    for company, ticker in STOCKS.items():
+        inc = get_ticker_data(inc_all, ticker)
+        if inc.empty:
+            continue
+        rev_v = latest(safe(inc, "Sales Revenue", "Sales and Services Revenues", "Revenue"))
+        oi_v  = latest(safe(inc, "Operating Income", "EBIT"))
+        ni_v  = latest(safe(inc, "Net Income", "Net Income Including Minority Interest"))
+        opm_v = latest(safe(inc, "Operating Margin"))
+        npm_v = latest(safe(inc, "Profit Margin"))
+        if rev_v:
+            chart_names.append(company)
+            chart_rev.append(rev_v)
+            chart_oi.append(oi_v)
+            chart_ni.append(ni_v)
+            chart_opm.append(to_pct_list([opm_v])[0] if opm_v else 0)
+            chart_npm.append(to_pct_list([npm_v])[0] if npm_v else 0)
+
+    # Revenue chart
     st.markdown('<span class="section-label">Revenue</span>', unsafe_allow_html=True)
-    rev_data = [(r["name"], r["rev"]) for r in rows if r.get("rev")]
-    if rev_data:
-        names_r, vals_r = zip(*rev_data)
+    if chart_names:
         fig_rev = go.Figure(go.Bar(
-            x=list(names_r),
-            y=[v/1e9 for v in vals_r],
+            x=chart_names,
+            y=[v/1e9 for v in chart_rev],
             marker_color=C_ACCENT,
             marker_line_width=0,
             hovertemplate="%{x}<br>$%{y:.1f}B<extra></extra>",
@@ -577,16 +594,12 @@ if page == "Overview":
 
     # Margin comparison
     st.markdown('<span class="section-label">Margins</span>', unsafe_allow_html=True)
-    m_names = [r["name"] for r in rows if r.get("opm") is not None]
-    m_opm   = [to_pct_list([r["opm"]])[0] for r in rows if r.get("opm") is not None]
-    m_npm   = [to_pct_list([r["npm"]])[0] for r in rows if r.get("npm") is not None]
-
-    if m_names:
+    if chart_names:
         fig_m = go.Figure()
-        fig_m.add_trace(go.Bar(name="Operating", x=m_names, y=m_opm,
+        fig_m.add_trace(go.Bar(name="Operating", x=chart_names, y=chart_opm,
                                marker_color=C_ACCENT, marker_line_width=0,
                                hovertemplate="%{x}<br>Operating: %{y:.1f}%<extra></extra>"))
-        fig_m.add_trace(go.Bar(name="Net", x=m_names, y=m_npm,
+        fig_m.add_trace(go.Bar(name="Net", x=chart_names, y=chart_npm,
                                marker_color="#BBBBBB", marker_line_width=0,
                                hovertemplate="%{x}<br>Net: %{y:.1f}%<extra></extra>"))
         fig_m.update_layout(**CHART_BASE)
