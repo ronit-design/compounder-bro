@@ -222,7 +222,7 @@ hr {{
 /* ── Summary table row ── */
 .tbl-row {{
     display: grid;
-    grid-template-columns: 2fr 0.8fr 1fr 0.9fr 1fr 1fr 1fr;
+    grid-template-columns: 1.6fr 0.6fr 0.9fr 0.9fr 0.8fr 0.9fr 0.8fr 0.9fr 0.8fr 0.8fr 0.8fr;
     padding: 0.65rem 0;
     border-bottom: 1px solid {C_BORDER2};
     align-items: center;
@@ -510,17 +510,39 @@ if page == "Overview":
         cf  = get_ticker_data(cf_all,  ticker)
         if inc.empty:
             rows.append({"name": company, "ticker": ticker}); continue
+
         rev_s = safe(inc, "Sales Revenue", "Revenue")
-        rev_l = latest(rev_s); rev_p = prev(rev_s)
+        gp_s  = safe(inc, "Gross Profit")
+        oi_s  = safe(inc, "Operating Income")
+        ni_s  = safe(inc, "Net Income")
+        gm_s  = safe(inc, "Gross Margin")
+        opm_s = safe(inc, "Operating Margin")
+        npm_s = safe(inc, "Profit Margin")
+
+        rev_l = latest(rev_s)
+        oi_l  = latest(oi_s)
+
+        # CAGR calculation: (end/start)^(1/n) - 1
+        def cagr(s):
+            vals = s.dropna().tolist()
+            if len(vals) < 2: return None
+            start, end, n = vals[0], vals[-1], len(vals) - 1
+            if start <= 0 or end <= 0 or n == 0: return None
+            return ((end / start) ** (1 / n) - 1) * 100
+
         rows.append({
-            "name":    company,
-            "ticker":  ticker,
-            "rev":     rev_l,
-            "rev_g":   yoy(rev_l, rev_p),
-            "gm":      latest(safe(inc, "Gross Margin")),
-            "opm":     latest(safe(inc, "Operating Margin")),
-            "npm":     latest(safe(inc, "Profit Margin")),
-            "fcf":     latest(safe(cf, "Free Cash Flow")) if not cf.empty else None,
+            "name":     company,
+            "ticker":   ticker,
+            "rev":      rev_l,
+            "gp":       latest(gp_s),
+            "gm":       latest(gm_s),
+            "oi":       oi_l,
+            "opm":      latest(opm_s),
+            "ni":       latest(ni_s),
+            "npm":      latest(npm_s),
+            "rev_cagr": cagr(rev_s),
+            "oi_cagr":  cagr(oi_s),
+            "n_years":  len(rev_s.dropna()),
         })
 
     # Header row
@@ -529,10 +551,14 @@ if page == "Overview":
         <span class="tbl-header">Company</span>
         <span class="tbl-header">Ticker</span>
         <span class="tbl-header">Revenue</span>
-        <span class="tbl-header">Growth</span>
-        <span class="tbl-header">Gross Margin</span>
+        <span class="tbl-header">Gross Profit</span>
+        <span class="tbl-header">GP Margin</span>
+        <span class="tbl-header">Op Profit</span>
         <span class="tbl-header">Op Margin</span>
+        <span class="tbl-header">Net Profit</span>
         <span class="tbl-header">Net Margin</span>
+        <span class="tbl-header">Rev CAGR</span>
+        <span class="tbl-header">Op CAGR</span>
     </div>""", unsafe_allow_html=True)
 
     for r in rows:
