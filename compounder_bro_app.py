@@ -400,7 +400,7 @@ CHART_BASE = dict(
         tickfont=dict(size=10, color=C_TEXT3),
         tickcolor=C_BORDER,
     ),
-    margin=dict(l=0, r=0, t=28, b=0),
+    margin=dict(l=0, r=0, t=48, b=0),
     hovermode="x unified",
     hoverlabel=dict(
         bgcolor=C_BG,
@@ -410,10 +410,10 @@ CHART_BASE = dict(
     legend=dict(
         bgcolor="rgba(0,0,0,0)",
         borderwidth=0,
-        font=dict(size=10, color=C_TEXT2),
+        font=dict(size=10, color=C_TEXT3),
         orientation="h",
-        yanchor="bottom", y=1.02,
-        xanchor="left",   x=0,
+        yanchor="top",  y=1.0,
+        xanchor="right", x=1.0,
     ),
 )
 
@@ -456,6 +456,7 @@ def make_line(x, ys, names, title, height=300, suffix=""):
     fig.update_layout(
         height=height,
         title=dict(text=title, font=dict(size=11, color=C_TEXT2, weight=500), x=0, xanchor="left"),
+        margin=dict(l=0, r=0, t=52, b=0),
         yaxis=dict(showgrid=True, gridcolor=C_BORDER2, gridwidth=1,
                    zeroline=False, showline=False,
                    tickfont=dict(size=10, color=C_TEXT3), tickcolor="rgba(0,0,0,0)"),
