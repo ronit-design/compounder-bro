@@ -503,6 +503,11 @@ if page == "Overview":
     st.markdown('<div class="page-title">Overview</div>', unsafe_allow_html=True)
     st.markdown('<div class="page-sub">Seven quality compounders — latest annual figures</div>', unsafe_allow_html=True)
 
+    with st.expander("Debug: column names loaded from sheet"):
+        if not inc_all.empty:
+            st.write("Income Statement columns:", inc_all.columns.tolist())
+            st.write("Sample row (RYAAY):", get_ticker_data(inc_all, "RYAAY").head(1).to_dict())
+
     # Build summary
     rows = []
     for company, ticker in STOCKS.items():
@@ -511,10 +516,10 @@ if page == "Overview":
         if inc.empty:
             rows.append({"name": company, "ticker": ticker}); continue
 
-        rev_s = safe(inc, "Sales Revenue", "Revenue")
+        rev_s = safe(inc, "Sales Revenue", "Sales and Services Revenues", "Revenue")
         gp_s  = safe(inc, "Gross Profit")
-        oi_s  = safe(inc, "Operating Income")
-        ni_s  = safe(inc, "Net Income")
+        oi_s  = safe(inc, "Operating Income", "EBIT")
+        ni_s  = safe(inc, "Net Income", "Net Income Including Minority Interest")
         gm_s  = safe(inc, "Gross Margin")
         opm_s = safe(inc, "Operating Margin")
         npm_s = safe(inc, "Profit Margin")
@@ -522,12 +527,12 @@ if page == "Overview":
         rev_l = latest(rev_s)
         oi_l  = latest(oi_s)
 
-        # CAGR calculation: (end/start)^(1/n) - 1
+        # CAGR: use first non-zero positive value as start
         def cagr(s):
-            vals = s.dropna().tolist()
+            vals = [v for v in s.dropna().tolist() if v and v > 0]
             if len(vals) < 2: return None
             start, end, n = vals[0], vals[-1], len(vals) - 1
-            if start <= 0 or end <= 0 or n == 0: return None
+            if start <= 0 or n == 0: return None
             return ((end / start) ** (1 / n) - 1) * 100
 
         rows.append({
