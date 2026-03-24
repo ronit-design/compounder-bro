@@ -509,12 +509,23 @@ if page == "Overview":
             st.write("Sample row (RYAAY):", get_ticker_data(inc_all, "RYAAY").head(1).to_dict())
 
     # Build summary
+    def calc_cagr(s):
+        """CAGR from first to last positive non-null value. n = number of intervals."""
+        vals = [v for v in s.dropna().tolist() if v is not None and v > 0]
+        if len(vals) < 2:
+            return None, 0
+        start, end = vals[0], vals[-1]
+        n = len(vals) - 1
+        if start <= 0 or n == 0:
+            return None, 0
+        return ((end / start) ** (1.0 / n) - 1) * 100, n
+
     rows = []
     for company, ticker in STOCKS.items():
         inc = get_ticker_data(inc_all, ticker)
-        cf  = get_ticker_data(cf_all,  ticker)
         if inc.empty:
-            rows.append({"name": company, "ticker": ticker}); continue
+            rows.append({"name": company, "ticker": ticker})
+            continue
 
         rev_s = safe(inc, "Sales Revenue", "Sales and Services Revenues", "Revenue")
         gp_s  = safe(inc, "Gross Profit")
@@ -524,30 +535,23 @@ if page == "Overview":
         opm_s = safe(inc, "Operating Margin")
         npm_s = safe(inc, "Profit Margin")
 
-        rev_l = latest(rev_s)
-        oi_l  = latest(oi_s)
-
-        # CAGR: use first non-zero positive value as start
-        def cagr(s):
-            vals = [v for v in s.dropna().tolist() if v and v > 0]
-            if len(vals) < 2: return None
-            start, end, n = vals[0], vals[-1], len(vals) - 1
-            if start <= 0 or n == 0: return None
-            return ((end / start) ** (1 / n) - 1) * 100
+        rev_cagr, rev_n = calc_cagr(rev_s)
+        oi_cagr,  oi_n  = calc_cagr(oi_s)
 
         rows.append({
             "name":     company,
             "ticker":   ticker,
-            "rev":      rev_l,
+            "rev":      latest(rev_s),
             "gp":       latest(gp_s),
             "gm":       latest(gm_s),
-            "oi":       oi_l,
+            "oi":       latest(oi_s),
             "opm":      latest(opm_s),
             "ni":       latest(ni_s),
             "npm":      latest(npm_s),
-            "rev_cagr": cagr(rev_s),
-            "oi_cagr":  cagr(oi_s),
-            "n_years":  len(rev_s.dropna()),
+            "rev_cagr": rev_cagr,
+            "rev_n":    rev_n,
+            "oi_cagr":  oi_cagr,
+            "oi_n":     oi_n,
         })
 
     # Header row
