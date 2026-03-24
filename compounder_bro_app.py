@@ -503,14 +503,7 @@ if page == "Overview":
     st.markdown('<div class="page-title">Overview</div>', unsafe_allow_html=True)
     st.markdown('<div class="page-sub">Seven quality compounders — latest annual figures</div>', unsafe_allow_html=True)
 
-    with st.expander("Debug: column names loaded from sheet"):
-        if not inc_all.empty:
-            st.write("Income Statement columns:", inc_all.columns.tolist())
-            st.write("Sample row (RYAAY):", get_ticker_data(inc_all, "RYAAY").head(1).to_dict())
-
-    # Build summary
     def calc_cagr(s):
-        """CAGR from first to last positive non-null value. n = number of intervals."""
         vals = [v for v in s.dropna().tolist() if v is not None and v > 0]
         if len(vals) < 2:
             return None, 0
@@ -520,11 +513,16 @@ if page == "Overview":
             return None, 0
         return ((end / start) ** (1.0 / n) - 1) * 100, n
 
+    def fmt_cagr(val, n):
+        if val is None: return "—"
+        sign = "+" if val >= 0 else ""
+        return f"{sign}{val:.1f}% ({n}y)"
+
     rows = []
     for company, ticker in STOCKS.items():
         inc = get_ticker_data(inc_all, ticker)
         if inc.empty:
-            rows.append({"name": company, "ticker": ticker})
+            rows.append({"Company": company, "Ticker": ticker})
             continue
 
         rev_s = safe(inc, "Sales Revenue", "Sales and Services Revenues", "Revenue")
@@ -539,50 +537,20 @@ if page == "Overview":
         oi_cagr,  oi_n  = calc_cagr(oi_s)
 
         rows.append({
-            "name":     company,
-            "ticker":   ticker,
-            "rev":      latest(rev_s),
-            "gp":       latest(gp_s),
-            "gm":       latest(gm_s),
-            "oi":       latest(oi_s),
-            "opm":      latest(opm_s),
-            "ni":       latest(ni_s),
-            "npm":      latest(npm_s),
-            "rev_cagr": rev_cagr,
-            "rev_n":    rev_n,
-            "oi_cagr":  oi_cagr,
-            "oi_n":     oi_n,
+            "Company":      company,
+            "Ticker":       ticker,
+            "Revenue":      fmt_currency(latest(rev_s)),
+            "Gross Profit": fmt_currency(latest(gp_s)),
+            "GP Margin":    fmt_pct(latest(gm_s)),
+            "Op Profit":    fmt_currency(latest(oi_s)),
+            "Op Margin":    fmt_pct(latest(opm_s)),
+            "Net Profit":   fmt_currency(latest(ni_s)),
+            "Net Margin":   fmt_pct(latest(npm_s)),
+            "Rev CAGR":     fmt_cagr(rev_cagr, rev_n),
+            "Op CAGR":      fmt_cagr(oi_cagr,  oi_n),
         })
 
-    # Header row
-    st.markdown("""
-    <div class="tbl-row" style="border-bottom:1px solid #E8E8E8; padding-bottom:0.5rem; margin-bottom:0.1rem">
-        <span class="tbl-header">Company</span>
-        <span class="tbl-header">Ticker</span>
-        <span class="tbl-header">Revenue</span>
-        <span class="tbl-header">Gross Profit</span>
-        <span class="tbl-header">GP Margin</span>
-        <span class="tbl-header">Op Profit</span>
-        <span class="tbl-header">Op Margin</span>
-        <span class="tbl-header">Net Profit</span>
-        <span class="tbl-header">Net Margin</span>
-        <span class="tbl-header">Rev CAGR</span>
-        <span class="tbl-header">Op CAGR</span>
-    </div>""", unsafe_allow_html=True)
-
-    for r in rows:
-        rg    = r.get("rev_g")
-        rg_html = f'<span class="tbl-{"up" if rg and rg>=0 else "down"}">{("+" if rg>=0 else "")}{rg:.1f}%</span>' if rg is not None else '<span style="color:#ccc">—</span>'
-        st.markdown(f"""
-        <div class="tbl-row">
-            <span class="tbl-cell tbl-name">{r['name']}</span>
-            <span class="tbl-ticker">{r['ticker']}</span>
-            <span class="tbl-cell">{fmt_currency(r.get('rev'))}</span>
-            {rg_html}
-            <span class="tbl-cell">{fmt_pct(r.get('gm'))}</span>
-            <span class="tbl-cell">{fmt_pct(r.get('opm'))}</span>
-            <span class="tbl-cell">{fmt_pct(r.get('npm'))}</span>
-        </div>""", unsafe_allow_html=True)
+    st.dataframe(pd.DataFrame(rows).set_index("Company"), use_container_width=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
 
