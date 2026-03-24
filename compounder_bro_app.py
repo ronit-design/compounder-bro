@@ -950,7 +950,7 @@ else:
         inv_l  = latest_days(inv_list)
         dpo_l  = latest_days(dpo_list)
         ccc_l  = latest_days(ccc_list)
-        nwc_l  = latest([v for v in pd.Series(nwc_list)] if any(v is not None for v in nwc_list) else pd.Series(dtype=float))
+        nwc_l  = latest(pd.Series(nwc_list, dtype=float))
 
         def wc_kpi(col, label, val_str, delta_days=None):
             if delta_days is not None:
