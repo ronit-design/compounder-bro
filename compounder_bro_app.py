@@ -219,29 +219,33 @@ hr {{
     display: block;
 }}
 
-/* ── Summary table row ── */
+/* ── Summary table ── */
 .tbl-row {{
     display: grid;
-    grid-template-columns: 1.6fr 0.6fr 0.9fr 0.9fr 0.8fr 0.9fr 0.8fr 0.9fr 0.8fr 0.8fr 0.8fr;
-    padding: 0.65rem 0;
+    grid-template-columns: 1.6fr 0.6fr 0.9fr 0.9fr 0.75fr 0.9fr 0.75fr 0.9fr 0.75fr 0.75fr 0.75fr;
+    padding: 0.6rem 0;
     border-bottom: 1px solid {C_BORDER2};
     align-items: center;
 }}
+.tbl-header-row {{
+    border-bottom: 1px solid {C_BORDER} !important;
+    padding-bottom: 0.5rem !important;
+    margin-bottom: 0.1rem;
+}}
 .tbl-header {{
-    font-size: 0.68rem;
+    font-size: 0.67rem;
     font-weight: 500;
     color: {C_TEXT3};
     text-transform: uppercase;
     letter-spacing: 0.07em;
 }}
 .tbl-cell {{
-    font-size: 0.82rem;
+    font-size: 0.8rem;
     color: {C_TEXT};
+    font-variant-numeric: tabular-nums;
 }}
-.tbl-name {{ font-weight: 500; }}
-.tbl-ticker {{ color: {C_TEXT3}; font-size: 0.75rem; }}
-.tbl-up   {{ color: {C_UP};   font-size: 0.78rem; }}
-.tbl-down {{ color: {C_DOWN}; font-size: 0.78rem; }}
+.tbl-name {{ font-weight: 500; font-size: 0.82rem; }}
+.tbl-ticker {{ color: {C_TEXT3}; font-size: 0.72rem; }}
 
 /* ── Sidebar company list ── */
 .nav-company {{
@@ -516,7 +520,7 @@ if page == "Overview":
     def fmt_cagr(val, n):
         if val is None: return "—"
         sign = "+" if val >= 0 else ""
-        return f"{sign}{val:.1f}% ({n}y)"
+        return f"{sign}{val:.1f}%"
 
     rows = []
     for company, ticker in STOCKS.items():
@@ -550,7 +554,41 @@ if page == "Overview":
             "Op CAGR":      fmt_cagr(oi_cagr,  oi_n),
         })
 
-    st.dataframe(pd.DataFrame(rows).set_index("Company"), use_container_width=True)
+    # Render HTML table
+    header_cols = ["Company", "Ticker", "Revenue", "Gross Profit", "GP Margin",
+                   "Op Profit", "Op Margin", "Net Profit", "Net Margin", "Rev CAGR", "Op CAGR"]
+
+    header_html = "".join(f'<span class="tbl-header">{h}</span>' for h in header_cols)
+    st.markdown(f'''<div class="tbl-row tbl-header-row">{header_html}</div>''',
+                unsafe_allow_html=True)
+
+    for r in rows:
+        def cell(key, cls="tbl-cell"):
+            return f'<span class="{cls}">{r.get(key, "—")}</span>'
+
+        rev_cagr_val = r.get("Rev CAGR", "—")
+        oi_cagr_val  = r.get("Op CAGR",  "—")
+
+        def cagr_span(val):
+            if val == "—": return '<span class="tbl-cell" style="color:#ccc">—</span>'
+            is_pos = not val.startswith("-")
+            color  = C_UP if is_pos else C_DOWN
+            return f'<span class="tbl-cell" style="color:{color};font-weight:500">{val}</span>'
+
+        st.markdown(f'''
+        <div class="tbl-row">
+            <span class="tbl-cell tbl-name">{r.get("Company","")}</span>
+            <span class="tbl-ticker">{r.get("Ticker","")}</span>
+            {cell("Revenue")}
+            {cell("Gross Profit")}
+            {cell("GP Margin")}
+            {cell("Op Profit")}
+            {cell("Op Margin")}
+            {cell("Net Profit")}
+            {cell("Net Margin")}
+            {cagr_span(rev_cagr_val)}
+            {cagr_span(oi_cagr_val)}
+        </div>''', unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
 
