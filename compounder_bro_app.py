@@ -267,7 +267,7 @@ hr {{
 def fetch_fundamental(endpoint, ticker):
     """Fetch income-statement, balance-sheet, or cash-flow from roic.ai."""
     url = f"{BASE_URL}/{endpoint}/{ticker}"
-    params = {"period": "annual", "limit": 20, "order": "asc", "apikey": API_KEY}
+    params = {"period": "annual", "limit": 20, "order": "desc", "apikey": API_KEY}
     try:
         r = requests.get(url, params=params, timeout=15)
         r.raise_for_status()
@@ -824,6 +824,10 @@ else:
 
     # TAB 3 — Cash Flow
     with tab3:
+        with st.expander("Debug: Cash Flow columns"):
+            st.write("CF columns:", cf.columns.tolist() if not cf.empty else "EMPTY")
+            if not cf.empty:
+                st.write("CF first row:", cf.head(1).to_dict())
         c1, c2 = st.columns(2, gap="large")
         with c1:
             if fcf_s.notna().any():
