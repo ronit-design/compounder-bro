@@ -542,6 +542,14 @@ if page == "Overview":
     st.markdown('<div class="page-title">Overview</div>', unsafe_allow_html=True)
     st.markdown('<div class="page-sub">Seven quality compounders — latest annual figures</div>', unsafe_allow_html=True)
 
+    with st.expander("Debug: API data check"):
+        test_inc = fetch_fundamental("fundamental/income-statement", "AAPL")
+        if not test_inc.empty:
+            st.write("AAPL columns:", test_inc.columns.tolist())
+            st.write("AAPL first row:", test_inc.head(1).to_dict())
+        else:
+            st.write("AAPL fetch returned empty — API may be down or auth failed")
+
     def calc_cagr(s):
         vals = [v for v in s.dropna().tolist() if v is not None and v > 0]
         if len(vals) < 2:
@@ -565,13 +573,14 @@ if page == "Overview":
             rows.append({"Company": company, "Ticker": ticker})
             continue
 
-        rev_s = safe(inc, "revenue", "sales_revenue", "Revenue")
-        gp_s  = safe(inc, "gross_profit", "Gross Profit")
-        oi_s  = safe(inc, "operating_income", "ebit", "Operating Income")
-        ni_s  = safe(inc, "net_income", "Net Income")
-        gm_s  = safe(inc, "gross_margin", "Gross Margin")
-        opm_s = safe(inc, "operating_margin", "Operating Margin")
-        npm_s = safe(inc, "profit_margin", "net_margin", "Profit Margin")
+        # Try all known variants — API may return camelCase, snake_case, or Title Case
+        rev_s = safe(inc, "revenue", "sales_revenue", "salesRevenue", "total_revenue", "Sales Revenue", "Revenue")
+        gp_s  = safe(inc, "gross_profit", "grossProfit", "Gross Profit")
+        oi_s  = safe(inc, "operating_income", "operatingIncome", "ebit", "Operating Income", "EBIT")
+        ni_s  = safe(inc, "net_income", "netIncome", "Net Income", "Net Income Including Minority Interest")
+        gm_s  = safe(inc, "gross_margin", "grossMargin", "Gross Margin")
+        opm_s = safe(inc, "operating_margin", "operatingMargin", "Operating Margin")
+        npm_s = safe(inc, "profit_margin", "profitMargin", "net_margin", "netMargin", "Profit Margin")
 
         rev_cagr, rev_n = calc_cagr(rev_s)
         oi_cagr,  oi_n  = calc_cagr(oi_s)
@@ -822,13 +831,14 @@ else:
         st.markdown("<br>", unsafe_allow_html=True)
         st.markdown('<span class="section-label">Historical</span>', unsafe_allow_html=True)
         margin_df = pd.DataFrame({
-            "Year":      years,
-            "Gross":     [f"{v:.1f}%" if v else "—" for v in gm_pct],
-            "Operating": [f"{v:.1f}%" if v else "—" for v in opm_pct],
-            "Net":       [f"{v:.1f}%" if v else "—" for v in npm_pct],
-        }).set_index("Year").T
-        st.dataframe(margin_df, use_container_width=True,
-                     column_config={c: st.column_config.TextColumn(c, width="small") for c in margin_df.columns})
+            "Metric":    ["Gross Margin", "Operating Margin", "Net Margin"],
+            **{y: [
+                f"{gm_pct[i]:.1f}%"  if gm_pct[i]  else "—",
+                f"{opm_pct[i]:.1f}%" if opm_pct[i] else "—",
+                f"{npm_pct[i]:.1f}%" if npm_pct[i] else "—",
+            ] for i, y in enumerate(years)}
+        }).set_index("Metric")
+        st.dataframe(margin_df, use_container_width=True)
 
     # TAB 3 — Cash Flow
     with tab3:
@@ -929,8 +939,13 @@ else:
             if any(v for v in pe_list     if v): val_df["P/E"]    = [fmt_multiple(v) for v in pe_list]
             if any(v for v in pfcf_list   if v): val_df["P/FCF"]  = [fmt_multiple(v) for v in pfcf_list]
             if any(v for v in evebit_list if v): val_df["EV/EBIT"]= [fmt_multiple(v) for v in evebit_list]
-            st.dataframe(val_df.set_index("Year").T, use_container_width=True,
-                         column_config={c: st.column_config.TextColumn(c, width="small") for c in val_df.columns if c != "Year"})
+            val_display = pd.DataFrame({
+                "Metric": val_names,
+                **{y: [val_ys[j][i] if val_ys[j][i] else None for j in range(len(val_names))]
+                   for i, y in enumerate(years)}
+            }).set_index("Metric")
+            val_display = val_display.applymap(lambda v: fmt_multiple(v) if v else "—")
+            st.dataframe(val_display, use_container_width=True)
         else:
             st.markdown('<span style="color:#999;font-size:0.82rem">Stock price required to calculate multiples. Add a Stock Price column to your Google Sheet.</span>', unsafe_allow_html=True)
 
@@ -1060,8 +1075,17 @@ else:
         wc_df["DPO"]            = [fmt_days(v) for v in dpo_list]
         wc_df["Cash Cycle"]     = [fmt_days(v) for v in ccc_list]
         wc_df["NWC"]            = [fmt_currency(v) for v in nwc_list]
-        st.dataframe(wc_df.set_index("Year").T, use_container_width=True,
-                     column_config={c: st.column_config.TextColumn(c, width="small") for c in wc_df.columns if c != "Year"})
+        wc_display = pd.DataFrame({
+            "Metric":         ["DSO", "Inventory Days", "DPO", "Cash Cycle", "NWC"],
+            **{bs_years[i]: [
+                fmt_days(dso_list[i]),
+                fmt_days(inv_list[i]),
+                fmt_days(dpo_list[i]),
+                fmt_days(ccc_list[i]),
+                fmt_currency(nwc_list[i]),
+            ] for i in range(len(bs_years))}
+        }).set_index("Metric")
+        st.dataframe(wc_display, use_container_width=True)
 
     # Raw data — tucked away, quiet
     st.markdown("<br>", unsafe_allow_html=True)
