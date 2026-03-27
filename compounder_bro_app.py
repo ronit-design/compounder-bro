@@ -722,8 +722,8 @@ else:
 
     # Cash flow series — align to cf length then to n
     n_cf  = len(cf) if not cf.empty else 0
-    fcf_s = align(safe(cf, "free_cash_flow", "fcf") if n_cf else pd.Series(dtype=float), n)
-    cfo_s = align(safe(cf, "cf_cfo", "cash_from_operations", "operating_cash_flow") if n_cf else pd.Series(dtype=float), n)
+    fcf_s = align(safe(cf, "cf_free_cash_flow") if n_cf else pd.Series(dtype=float), n)
+    cfo_s = align(safe(cf, "cf_cash_from_oper") if n_cf else pd.Series(dtype=float), n)
 
     # Balance sheet series — use bs_years for working capital, align to n for valuation
     bs_years = bs["Date"].dt.year.astype(str).tolist() if not bs.empty and "Date" in bs.columns else years
@@ -824,10 +824,6 @@ else:
 
     # TAB 3 — Cash Flow
     with tab3:
-        with st.expander("Debug: Cash Flow columns"):
-            st.write("CF columns:", cf.columns.tolist() if not cf.empty else "EMPTY")
-            if not cf.empty:
-                st.write("CF first row:", cf.head(1).to_dict())
         c1, c2 = st.columns(2, gap="large")
         with c1:
             if fcf_s.notna().any():
@@ -937,6 +933,10 @@ else:
 
     # TAB 5 — Working Capital
     with tab5:
+        with st.expander("Debug: Balance Sheet columns"):
+            st.write("BS columns:", bs.columns.tolist() if not bs.empty else "EMPTY")
+            if not bs.empty:
+                st.write("BS first row:", bs.head(1).to_dict())
 
         def days(numerator_s, denominator_s, label):
             """Calculate a days metric year by year. Returns list aligned to bs_years."""
