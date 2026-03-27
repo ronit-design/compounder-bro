@@ -542,14 +542,6 @@ if page == "Overview":
     st.markdown('<div class="page-title">Overview</div>', unsafe_allow_html=True)
     st.markdown('<div class="page-sub">Seven quality compounders — latest annual figures</div>', unsafe_allow_html=True)
 
-    with st.expander("Debug: API data check"):
-        test_inc = fetch_fundamental("fundamental/income-statement", "AAPL")
-        if not test_inc.empty:
-            st.write("AAPL columns:", test_inc.columns.tolist())
-            st.write("AAPL first row:", test_inc.head(1).to_dict())
-        else:
-            st.write("AAPL fetch returned empty — API may be down or auth failed")
-
     def calc_cagr(s):
         vals = [v for v in s.dropna().tolist() if v is not None and v > 0]
         if len(vals) < 2:
@@ -574,13 +566,13 @@ if page == "Overview":
             continue
 
         # Try all known variants — API may return camelCase, snake_case, or Title Case
-        rev_s = safe(inc, "revenue", "sales_revenue", "salesRevenue", "total_revenue", "Sales Revenue", "Revenue")
-        gp_s  = safe(inc, "gross_profit", "grossProfit", "Gross Profit")
-        oi_s  = safe(inc, "operating_income", "operatingIncome", "ebit", "Operating Income", "EBIT")
-        ni_s  = safe(inc, "net_income", "netIncome", "Net Income", "Net Income Including Minority Interest")
-        gm_s  = safe(inc, "gross_margin", "grossMargin", "Gross Margin")
-        opm_s = safe(inc, "operating_margin", "operatingMargin", "Operating Margin")
-        npm_s = safe(inc, "profit_margin", "profitMargin", "net_margin", "netMargin", "Profit Margin")
+        rev_s = safe(inc, "is_sales_revenue_turnover", "is_sales_and_services_revenues")
+        gp_s  = safe(inc, "is_gross_profit")
+        oi_s  = safe(inc, "ebit", "is_oper_income")
+        ni_s  = safe(inc, "is_net_income", "is_ni_including_minority_int_ratio")
+        gm_s  = safe(inc, "gross_margin")
+        opm_s = safe(inc, "oper_margin")
+        npm_s = safe(inc, "profit_margin")
 
         rev_cagr, rev_n = calc_cagr(rev_s)
         oi_cagr,  oi_n  = calc_cagr(oi_s)
@@ -705,31 +697,21 @@ else:
         st.error(f"No data returned for {ticker}. The API may be unavailable or the ticker may have changed.")
         st.stop()
 
-    with st.expander("Debug: API column names"):
-        st.write("Income Statement columns:", inc.columns.tolist())
-        st.write("Income Statement shape:", inc.shape)
-        if not inc.empty:
-            st.write("First row sample:", inc.head(1).to_dict())
-        if not bs.empty:
-            st.write("Balance Sheet columns:", bs.columns.tolist())
-        if not cf.empty:
-            st.write("Cash Flow columns:", cf.columns.tolist())
-
     years    = inc["Date"].dt.year.astype(str).tolist() if "Date" in inc.columns else [str(i) for i in range(len(inc))]
     cf_years = cf["Date"].dt.year.astype(str).tolist()  if not cf.empty and "Date" in cf.columns else years
     n        = len(years)  # canonical length — all series must match this
 
     # Series — all aligned to n (income statement row count)
-    rev_s    = align(safe(inc, "revenue", "sales_revenue", "Sales Revenue", "Revenue"), n)
-    ni_s     = align(safe(inc, "net_income", "Net Income", "Net Income Including Minority Interest"), n)
-    oi_s     = align(safe(inc, "operating_income", "ebit", "Operating Income", "EBIT"), n)
-    gp_s     = align(safe(inc, "gross_profit", "Gross Profit"), n)
-    gm_s     = align(safe(inc, "gross_margin", "Gross Margin"), n)
-    opm_s    = align(safe(inc, "operating_margin", "Operating Margin"), n)
-    npm_s    = align(safe(inc, "profit_margin", "net_margin", "Profit Margin"), n)
-    eps_s    = align(safe(inc, "diluted_eps", "eps", "Diluted EPS", "Earnings Per Share"), n)
-    shares_s = align(safe(inc, "diluted_shares_outstanding", "shares_outstanding", "Diluted Shares Outstanding", "Average Shares Outstanding"), n)
-    cogs_s   = align(safe(inc, "cost_of_goods_sold", "cogs", "Cost of Goods Sold", "Cost of Goods and Services Sold"), n)
+    rev_s    = align(safe(inc, "is_sales_revenue_turnover", "is_sales_and_services_revenues"), n)
+    ni_s     = align(safe(inc, "is_net_income", "is_ni_including_minority_int_ratio"), n)
+    oi_s     = align(safe(inc, "ebit", "is_oper_income"), n)
+    gp_s     = align(safe(inc, "is_gross_profit"), n)
+    gm_s     = align(safe(inc, "gross_margin"), n)
+    opm_s    = align(safe(inc, "oper_margin"), n)
+    npm_s    = align(safe(inc, "profit_margin"), n)
+    eps_s    = align(safe(inc, "diluted_eps", "eps"), n)
+    shares_s = align(safe(inc, "is_sh_for_diluted_eps", "is_avg_num_sh_for_eps"), n)
+    cogs_s   = align(safe(inc, "is_cogs", "is_cog_and_services_sold"), n)
 
     # Year-end price — aligned to income statement years
     price_series, price_years = fetch_year_end_price(ticker, fe_month)
@@ -740,18 +722,18 @@ else:
 
     # Cash flow series — align to cf length then to n
     n_cf  = len(cf) if not cf.empty else 0
-    fcf_s = align(safe(cf, "free_cash_flow", "Free Cash Flow") if n_cf else pd.Series(dtype=float), n)
-    cfo_s = align(safe(cf, "cash_from_operations", "operating_cash_flow", "Cash from Operations") if n_cf else pd.Series(dtype=float), n)
+    fcf_s = align(safe(cf, "free_cash_flow", "fcf") if n_cf else pd.Series(dtype=float), n)
+    cfo_s = align(safe(cf, "cf_cfo", "cash_from_operations", "operating_cash_flow") if n_cf else pd.Series(dtype=float), n)
 
     # Balance sheet series — use bs_years for working capital, align to n for valuation
     bs_years = bs["Date"].dt.year.astype(str).tolist() if not bs.empty and "Date" in bs.columns else years
     n_bs  = len(bs) if not bs.empty else 0
-    nd_s  = align(safe(bs, "net_debt", "Net Debt") if n_bs else pd.Series(dtype=float), n)
-    ar_s  = safe(bs, "accounts_receivable", "accounts_notes_receivable", "Accounts & Notes Receivable", "Accounts Receivable") if n_bs else pd.Series(dtype=float)
-    inv_s = safe(bs, "inventories", "inventory", "Inventories") if n_bs else pd.Series(dtype=float)
-    ap_s  = safe(bs, "accounts_payable", "Accounts Payable", "Accounts Payable & Accruals") if n_bs else pd.Series(dtype=float)
-    ca_s  = safe(bs, "total_current_assets", "Total Current Assets") if n_bs else pd.Series(dtype=float)
-    cl_s  = safe(bs, "total_current_liabilities", "Total Current Liabilities") if n_bs else pd.Series(dtype=float)
+    nd_s  = align(safe(bs, "net_debt") if n_bs else pd.Series(dtype=float), n)
+    ar_s  = safe(bs, "bs_accts_notes_rec", "bs_accts_rec", "accounts_receivable") if n_bs else pd.Series(dtype=float)
+    inv_s = safe(bs, "bs_inventories", "inventories") if n_bs else pd.Series(dtype=float)
+    ap_s  = safe(bs, "bs_accts_payable", "bs_accts_pay_accruals", "accounts_payable") if n_bs else pd.Series(dtype=float)
+    ca_s  = safe(bs, "bs_tot_cur_assets", "total_current_assets") if n_bs else pd.Series(dtype=float)
+    cl_s  = safe(bs, "bs_tot_cur_liabilities", "total_current_liabilities") if n_bs else pd.Series(dtype=float)
 
     rev_list   = rev_s.tolist()
     rev_growth = [None] + [
