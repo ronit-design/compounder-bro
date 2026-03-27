@@ -4,24 +4,16 @@ import plotly.graph_objects as go
 import requests
 
 # ── Config ────────────────────────────────────────────────────────────────────
-SHEET_ID     = "1zxw8jiuaeNDJelyUNrJ4H91NqOluwvJ7dl5p6MPKWRI"
-API_KEY      = "73d3049608e044f1a63182f51656c760"
-BASE_URL     = "https://api.roic.ai/v2"
-
-def sheet_url(gid):
-    return f"https://docs.google.com/spreadsheets/d/{SHEET_ID}/export?format=csv&gid={gid}"
-
-SHEET_INCOME = sheet_url(0)
-SHEET_BS     = sheet_url(1653631279)
-SHEET_CF     = sheet_url(1757000096)
+API_KEY  = "73d3049608e044f1a63182f51656c760"
+BASE_URL = "https://api.roic.ai/v2"
 
 STOCKS = {
     "Ryanair":                "RYAAY",
     "Copart":                 "CPRT",
-    "Constellation Software": "CSU.TO",
+    "Constellation Software": "CSU",
     "Fair Isaac":             "FICO",
     "S&P Global":             "SPGI",
-    "Moody's":                "MCO",
+    "Moody's":               "MCO",
     "ASML":                   "ASML",
 }
 
@@ -271,44 +263,78 @@ hr {{
 
 
 # ── Data loaders ──────────────────────────────────────────────────────────────
-@st.cache_data(ttl=1800, show_spinner=False)
-def load_sheet(url):
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_fundamental(endpoint, ticker):
+    """Fetch income-statement, balance-sheet, or cash-flow from roic.ai."""
+    url = f"{BASE_URL}/{endpoint}/{ticker}"
+    params = {"period": "annual", "limit": 20, "order": "asc", "apikey": API_KEY}
     try:
-        df = pd.read_csv(url)
-        df.columns = df.columns.str.strip()
-        df = df[df["Ticker"] != "Ticker"].reset_index(drop=True)
-        if "Date" in df.columns:
-            df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+        r = requests.get(url, params=params, timeout=15)
+        r.raise_for_status()
+        raw = r.json()
+        # API returns list of dicts or {"data": [...]}
+        rows = raw if isinstance(raw, list) else raw.get("data", [])
+        if not rows:
+            return pd.DataFrame()
+        df = pd.DataFrame(rows)
+        # Normalise column names: lowercase with underscores → keep original
+        # Parse date
+        for col in ["date", "Date", "period_end", "fiscal_year_end"]:
+            if col in df.columns:
+                df[col] = pd.to_datetime(df[col], errors="coerce")
+                df = df.rename(columns={col: "Date"})
+                break
+        # Coerce all non-string columns to numeric
+        skip = {"Date", "ticker", "Ticker", "period", "Period",
+                "period_label", "currency", "Currency"}
         for col in df.columns:
-            if col not in ["Ticker", "Date", "Period", "Period Label", "Currency"]:
+            if col not in skip:
                 df[col] = pd.to_numeric(df[col], errors="coerce")
+        df = df.sort_values("Date").reset_index(drop=True)
         return df
     except Exception as e:
-        st.error(f"Could not load data: {e}")
         return pd.DataFrame()
-
-def get_ticker_data(df, ticker):
-    if df.empty or "Ticker" not in df.columns:
-        return pd.DataFrame()
-    out = df[df["Ticker"] == ticker].copy()
-    if "Date" in out.columns:
-        out = out.sort_values("Date")
-    return out.reset_index(drop=True)
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def fetch_prices(ticker):
-    url    = f"{BASE_URL}/stock-prices/{ticker}"
-    params = {"limit": 100000, "order": "asc", "format": "json", "apikey": API_KEY}
+    """Fetch full daily price history."""
+    url = f"{BASE_URL}/stock-prices/{ticker}"
+    params = {"limit": 100000, "order": "asc", "apikey": API_KEY}
     try:
-        r    = requests.get(url, params=params, timeout=15)
+        r = requests.get(url, params=params, timeout=15)
         r.raise_for_status()
-        data = r.json()
-        df   = pd.DataFrame(data if isinstance(data, list) else data.get("data", []))
+        raw = r.json()
+        rows = raw if isinstance(raw, list) else raw.get("data", [])
+        df = pd.DataFrame(rows)
         if "date" in df.columns:
             df["date"] = pd.to_datetime(df["date"])
         return df
     except:
         return pd.DataFrame()
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_year_end_price(ticker, month):
+    """
+    Return a Series of year-end closing prices aligned to fiscal year end month.
+    Picks the last available trading day in the target month for each year.
+    """
+    prices = fetch_prices(ticker)
+    if prices.empty or "date" not in prices.columns:
+        return pd.Series(dtype=float), []
+    close_col = next((c for c in ["adj_close", "adjusted_close", "close"] if c in prices.columns), None)
+    if not close_col:
+        return pd.Series(dtype=float), []
+    prices = prices.dropna(subset=["date", close_col])
+    prices["year"]  = prices["date"].dt.year
+    prices["month"] = prices["date"].dt.month
+    # Keep only rows in the target month
+    monthly = prices[prices["month"] == month]
+    if monthly.empty:
+        return pd.Series(dtype=float), []
+    # Last trading day per year
+    idx = monthly.groupby("year")["date"].idxmax()
+    result = monthly.loc[idx].set_index("year")[close_col].sort_index()
+    return result, result.index.astype(str).tolist()
 
 
 # ── Number helpers ────────────────────────────────────────────────────────────
@@ -487,17 +513,13 @@ with st.sidebar:
         selected = st.selectbox("", list(STOCKS.keys()), label_visibility="collapsed")
 
     st.markdown("<br>" * 6, unsafe_allow_html=True)
-    st.markdown('<div style="font-size:0.68rem;color:#ccc">Updated every 30 min</div>', unsafe_allow_html=True)
+    st.markdown('<div style="font-size:0.68rem;color:#ccc">Live from roic.ai</div>', unsafe_allow_html=True)
     if st.button("Refresh"):
         st.cache_data.clear()
         st.rerun()
 
 
-# ── Load data ─────────────────────────────────────────────────────────────────
-with st.spinner(""):
-    inc_all = load_sheet(SHEET_INCOME)
-    bs_all  = load_sheet(SHEET_BS)
-    cf_all  = load_sheet(SHEET_CF)
+# (Data is fetched per-ticker on demand via fetch_fundamental)
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -525,18 +547,19 @@ if page == "Overview":
 
     rows = []
     for company, ticker in STOCKS.items():
-        inc = get_ticker_data(inc_all, ticker)
+        with st.spinner(f"Loading {company}..."):
+            inc = fetch_fundamental("fundamental/income-statement", ticker)
         if inc.empty:
             rows.append({"Company": company, "Ticker": ticker})
             continue
 
-        rev_s = safe(inc, "Sales Revenue", "Sales and Services Revenues", "Revenue")
-        gp_s  = safe(inc, "Gross Profit")
-        oi_s  = safe(inc, "Operating Income", "EBIT")
-        ni_s  = safe(inc, "Net Income", "Net Income Including Minority Interest")
-        gm_s  = safe(inc, "Gross Margin")
-        opm_s = safe(inc, "Operating Margin")
-        npm_s = safe(inc, "Profit Margin")
+        rev_s = safe(inc, "revenue", "sales_revenue", "Revenue")
+        gp_s  = safe(inc, "gross_profit", "Gross Profit")
+        oi_s  = safe(inc, "operating_income", "ebit", "Operating Income")
+        ni_s  = safe(inc, "net_income", "Net Income")
+        gm_s  = safe(inc, "gross_margin", "Gross Margin")
+        opm_s = safe(inc, "operating_margin", "Operating Margin")
+        npm_s = safe(inc, "profit_margin", "net_margin", "Profit Margin")
 
         rev_cagr, rev_n = calc_cagr(rev_s)
         oi_cagr,  oi_n  = calc_cagr(oi_s)
@@ -553,6 +576,12 @@ if page == "Overview":
             "Net Margin":   fmt_pct(latest(npm_s)),
             "Rev CAGR":     fmt_cagr(rev_cagr, rev_n),
             "Op CAGR":      fmt_cagr(oi_cagr,  oi_n),
+            # keep raw for charts
+            "_rev": latest(rev_s),
+            "_oi":  latest(oi_s),
+            "_ni":  latest(ni_s),
+            "_opm": latest(opm_s),
+            "_npm": latest(npm_s),
         })
 
     # Render HTML table
@@ -593,24 +622,11 @@ if page == "Overview":
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # Rebuild raw numeric data for charts from the sheet directly
-    chart_rev, chart_gp, chart_oi, chart_ni, chart_opm, chart_npm, chart_names = [], [], [], [], [], [], []
-    for company, ticker in STOCKS.items():
-        inc = get_ticker_data(inc_all, ticker)
-        if inc.empty:
-            continue
-        rev_v = latest(safe(inc, "Sales Revenue", "Sales and Services Revenues", "Revenue"))
-        oi_v  = latest(safe(inc, "Operating Income", "EBIT"))
-        ni_v  = latest(safe(inc, "Net Income", "Net Income Including Minority Interest"))
-        opm_v = latest(safe(inc, "Operating Margin"))
-        npm_v = latest(safe(inc, "Profit Margin"))
-        if rev_v:
-            chart_names.append(company)
-            chart_rev.append(rev_v)
-            chart_oi.append(oi_v)
-            chart_ni.append(ni_v)
-            chart_opm.append(to_pct_list([opm_v])[0] if opm_v else 0)
-            chart_npm.append(to_pct_list([npm_v])[0] if npm_v else 0)
+    # Use raw values stored in rows
+    chart_names = [r["Company"] for r in rows if r.get("_rev")]
+    chart_rev   = [r["_rev"]  for r in rows if r.get("_rev")]
+    chart_opm   = [to_pct_list([r.get("_opm")])[0] if r.get("_opm") is not None else 0 for r in rows if r.get("_rev")]
+    chart_npm   = [to_pct_list([r.get("_npm")])[0] if r.get("_npm") is not None else 0 for r in rows if r.get("_rev")]
 
     # Revenue chart
     st.markdown('<span class="section-label">Revenue</span>', unsafe_allow_html=True)
@@ -655,39 +671,48 @@ if page == "Overview":
 # COMPANY DEEP DIVE
 # ══════════════════════════════════════════════════════════════════════════════
 else:
-    ticker = STOCKS[selected]
-    inc    = get_ticker_data(inc_all, ticker)
-    bs     = get_ticker_data(bs_all,  ticker)
-    cf     = get_ticker_data(cf_all,  ticker)
+    ticker     = STOCKS[selected]
+    fe_month   = {"RYAAY": 3, "CPRT": 7, "CSU": 12, "FICO": 9,
+                  "SPGI": 12, "MCO": 12, "ASML": 12}.get(ticker, 12)
+
+    with st.spinner(""):
+        inc = fetch_fundamental("fundamental/income-statement", ticker)
+        bs  = fetch_fundamental("fundamental/balance-sheet",    ticker)
+        cf  = fetch_fundamental("fundamental/cash-flow",        ticker)
 
     if inc.empty:
-        st.error(f"No data found for {ticker}. Check that the ticker matches exactly in your Google Sheet.")
+        st.error(f"No data returned for {ticker}. The API may be unavailable or the ticker may have changed.")
         st.stop()
 
     years    = inc["Date"].dt.year.astype(str).tolist() if "Date" in inc.columns else [str(i) for i in range(len(inc))]
     cf_years = cf["Date"].dt.year.astype(str).tolist()  if not cf.empty and "Date" in cf.columns else years
 
     # Series
-    rev_s    = safe(inc, "Sales Revenue", "Revenue")
-    ni_s     = safe(inc, "Net Income")
-    oi_s     = safe(inc, "Operating Income")
-    gm_s     = safe(inc, "Gross Margin")
-    opm_s    = safe(inc, "Operating Margin")
-    npm_s    = safe(inc, "Profit Margin")
-    eps_s    = safe(inc, "Diluted EPS", "Earnings Per Share")
-    price_s  = safe(inc, "Stock Price")
-    shares_s = safe(inc, "Diluted Shares Outstanding", "Average Shares Outstanding")
-    fcf_s    = safe(cf,  "Free Cash Flow")       if not cf.empty else pd.Series(dtype=float)
-    cfo_s    = safe(cf,  "Cash from Operations") if not cf.empty else pd.Series(dtype=float)
-    nd_s     = safe(bs,  "Net Debt")             if not bs.empty else pd.Series(dtype=float)
+    rev_s    = safe(inc, "revenue", "sales_revenue", "Sales Revenue", "Revenue")
+    ni_s     = safe(inc, "net_income", "Net Income", "Net Income Including Minority Interest")
+    oi_s     = safe(inc, "operating_income", "ebit", "Operating Income", "EBIT")
+    gm_s     = safe(inc, "gross_margin", "Gross Margin")
+    opm_s    = safe(inc, "operating_margin", "Operating Margin")
+    npm_s    = safe(inc, "profit_margin", "net_margin", "Profit Margin")
+    eps_s    = safe(inc, "diluted_eps", "eps", "Diluted EPS", "Earnings Per Share")
+    price_series, price_years = fetch_year_end_price(ticker, fe_month)
+    # Align price to income statement years
+    price_s  = pd.Series([
+        float(price_series.get(int(y), float("nan"))) if int(y) in price_series.index else float("nan")
+        for y in years
+    ], dtype=float)
+    shares_s = safe(inc, "diluted_shares_outstanding", "shares_outstanding", "Diluted Shares Outstanding", "Average Shares Outstanding")
+    fcf_s    = safe(cf,  "free_cash_flow", "Free Cash Flow")       if not cf.empty else pd.Series(dtype=float)
+    cfo_s    = safe(cf,  "cash_from_operations", "operating_cash_flow", "Cash from Operations") if not cf.empty else pd.Series(dtype=float)
+    nd_s     = safe(bs,  "net_debt", "Net Debt")             if not bs.empty else pd.Series(dtype=float)
 
     # Working capital series — all from balance sheet
-    ar_s     = safe(bs, "Accounts & Notes Receivable", "Accounts Receivable") if not bs.empty else pd.Series(dtype=float)
-    inv_s    = safe(bs, "Inventories")                                         if not bs.empty else pd.Series(dtype=float)
-    ap_s     = safe(bs, "Accounts Payable", "Accounts Payable & Accruals")     if not bs.empty else pd.Series(dtype=float)
-    ca_s     = safe(bs, "Total Current Assets")                                if not bs.empty else pd.Series(dtype=float)
-    cl_s     = safe(bs, "Total Current Liabilities")                           if not bs.empty else pd.Series(dtype=float)
-    cogs_s   = safe(inc, "Cost of Goods Sold", "Cost of Goods and Services Sold")
+    ar_s     = safe(bs, "accounts_receivable", "accounts_notes_receivable", "Accounts & Notes Receivable", "Accounts Receivable") if not bs.empty else pd.Series(dtype=float)
+    inv_s    = safe(bs, "inventories", "inventory", "Inventories")                                         if not bs.empty else pd.Series(dtype=float)
+    ap_s     = safe(bs, "accounts_payable", "Accounts Payable", "Accounts Payable & Accruals")     if not bs.empty else pd.Series(dtype=float)
+    ca_s     = safe(bs, "total_current_assets", "Total Current Assets")                                if not bs.empty else pd.Series(dtype=float)
+    cl_s     = safe(bs, "total_current_liabilities", "Total Current Liabilities")                           if not bs.empty else pd.Series(dtype=float)
+    cogs_s   = safe(inc, "cost_of_goods_sold", "cogs", "Cost of Goods Sold", "Cost of Goods and Services Sold")
 
     # Align balance sheet years to income statement years for consistency
     bs_years = bs["Date"].dt.year.astype(str).tolist() if not bs.empty and "Date" in bs.columns else years
@@ -810,24 +835,20 @@ else:
     # TAB 4 — Valuation
     with tab4:
         # Stock price
+        # Year-end price chart
         if price_s.notna().any():
-            fig_px = make_line(
-                years,
-                [price_s.tolist()],
-                ["Price"],
-                "Stock Price  ($)",
-                height=300,
-            )
+            fig_px = make_line(years, [price_s.tolist()], ["Price"],
+                               "Year-End Stock Price  ($)", height=300)
             fig_px.update_layout(yaxis=dict(tickprefix="$", showgrid=True,
                                              gridcolor=C_BORDER2, tickfont=dict(size=10, color=C_TEXT3),
                                              zeroline=False, showline=False))
             st.plotly_chart(fig_px, use_container_width=True, config={"displayModeBar": False})
         else:
-            st.markdown('<span class="section-label">Stock Price  — live</span>', unsafe_allow_html=True)
+            # Fall back to full daily price history
             with st.spinner(""):
                 prices = fetch_prices(ticker)
             if not prices.empty:
-                close_col = next((c for c in ["adj_close", "close", "adjusted_close"]
+                close_col = next((c for c in ["adj_close", "adjusted_close", "close"]
                                   if c in prices.columns), prices.columns[1])
                 fig_px = go.Figure(go.Scatter(
                     x=prices["date"], y=prices[close_col],
@@ -836,12 +857,12 @@ else:
                     hovertemplate="%{x|%d %b %Y}<br>$%{y:.2f}<extra></extra>",
                 ))
                 fig_px.update_layout(**CHART_BASE)
-                fig_px.update_layout(
-                    height=300, showlegend=False,
+                fig_px.update_layout(height=300, showlegend=False,
                     yaxis=dict(tickprefix="$", showgrid=True, gridcolor=C_BORDER2,
-                               tickfont=dict(size=10, color=C_TEXT3), zeroline=False, showline=False),
-                )
+                               tickfont=dict(size=10, color=C_TEXT3), zeroline=False, showline=False))
                 st.plotly_chart(fig_px, use_container_width=True, config={"displayModeBar": False})
+            else:
+                st.markdown('<span style="color:#999;font-size:0.82rem">Price data not available.</span>', unsafe_allow_html=True)
 
         # Multiples
         st.markdown("<br>", unsafe_allow_html=True)
