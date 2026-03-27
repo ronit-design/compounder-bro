@@ -729,11 +729,11 @@ else:
     bs_years = bs["Date"].dt.year.astype(str).tolist() if not bs.empty and "Date" in bs.columns else years
     n_bs  = len(bs) if not bs.empty else 0
     nd_s  = align(safe(bs, "net_debt") if n_bs else pd.Series(dtype=float), n)
-    ar_s  = safe(bs, "bs_accts_notes_rec", "bs_accts_rec", "accounts_receivable") if n_bs else pd.Series(dtype=float)
-    inv_s = safe(bs, "bs_inventories", "inventories") if n_bs else pd.Series(dtype=float)
-    ap_s  = safe(bs, "bs_accts_payable", "bs_accts_pay_accruals", "accounts_payable") if n_bs else pd.Series(dtype=float)
-    ca_s  = safe(bs, "bs_tot_cur_assets", "total_current_assets") if n_bs else pd.Series(dtype=float)
-    cl_s  = safe(bs, "bs_tot_cur_liabilities", "total_current_liabilities") if n_bs else pd.Series(dtype=float)
+    ar_s  = safe(bs, "bs_acct_note_rcv", "bs_accts_rec_excl_notes_rec") if n_bs else pd.Series(dtype=float)
+    inv_s = safe(bs, "bs_inventories") if n_bs else pd.Series(dtype=float)
+    ap_s  = safe(bs, "bs_acct_payable") if n_bs else pd.Series(dtype=float)
+    ca_s  = safe(bs, "bs_cur_asset_report") if n_bs else pd.Series(dtype=float)
+    cl_s  = safe(bs, "bs_cur_liab") if n_bs else pd.Series(dtype=float)
 
     rev_list   = rev_s.tolist()
     rev_growth = [None] + [
@@ -933,10 +933,6 @@ else:
 
     # TAB 5 — Working Capital
     with tab5:
-        with st.expander("Debug: Balance Sheet columns"):
-            st.write("BS columns:", bs.columns.tolist() if not bs.empty else "EMPTY")
-            if not bs.empty:
-                st.write("BS first row:", bs.head(1).to_dict())
 
         def days(numerator_s, denominator_s, label):
             """Calculate a days metric year by year. Returns list aligned to bs_years."""
