@@ -726,25 +726,26 @@ NOW WRITE ONLY THE FOLLOWING SECTION:
 
             text = text.strip()
 
-            # Strip ALL occurrences of the heading from the model output
-            # (model sometimes repeats it mid-text too)
-            # 1. Remove exact heading match anywhere in text
-            escaped = _re_assemble.escape(heading)
-            text = _re_assemble.sub(escaped, "", text)
-
-            # 2. Remove any generic numbered heading lines at the start
+            # Remove the exact heading (and any markdown-wrapped variant) from the text
+            sec_num = heading.split(".")[0].strip()  # e.g. "1"
+            # Strip any line that starts with this section number + dot/paren
             lines = text.split("\n")
-            while lines and _re_assemble.match(r"^\s*\d+[.\)]\s+", lines[0]):
-                lines.pop(0)
-            # 3. Strip leading blank lines
-            while lines and not lines[0].strip():
-                lines.pop(0)
-            body = "\n".join(lines).strip()
+            cleaned_lines = []
+            for line in lines:
+                stripped = line.strip().lstrip("*#").strip()
+                # Drop lines that ARE the heading (start with "1." or "1)")
+                if _re_assemble.match(rf"^{sec_num}[.\)]\s+", stripped):
+                    continue
+                cleaned_lines.append(line)
+
+            body = "\n".join(cleaned_lines).strip()
+            # Strip any remaining leading blank lines
+            body = body.lstrip("\n").strip()
 
             if not body:
                 continue
 
-            # Re-attach the single canonical heading we control
+            # Canonical heading + body — exactly one heading per section
             section_text = f"{heading}\n\n{body}"
             report_parts.append(section_text)
 
