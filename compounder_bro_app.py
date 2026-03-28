@@ -654,18 +654,11 @@ def generate_report_nvidia(company_name, ticker, financials_text, transcripts, f
         )
         r.raise_for_status()
         data = r.json()
-        # Extract text robustly — handle varying response shapes
-        text = None
-        try:
-            text = data["choices"][0]["message"]["content"]
-        except (KeyError, IndexError, TypeError):
-            pass
-        if not text:
-            # Try alternative paths
-            text = (data.get("content") or
-                    data.get("text") or
-                    data.get("choices", [{}])[0].get("text") or
-                    str(data))
+        # Extract text — NVIDIA Nemotron returns output in reasoning_content, not content
+        msg  = data["choices"][0]["message"]
+        text = (msg.get("content") or
+                msg.get("reasoning_content") or
+                msg.get("text") or "")
         if not text or len(str(text)) < 50:
             return f"NVIDIA returned an empty response. Raw: {str(data)[:500]}"
         return _clean_report(str(text))
