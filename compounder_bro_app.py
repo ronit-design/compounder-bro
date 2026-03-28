@@ -634,6 +634,9 @@ Quantify the realistic serviceable obtainable market taking geographic and regul
 
 Identify the specific, trackable events over the next six to eighteen months — product launches, contract expirations, regulatory rulings, M&A closures — that will force the market to actively reprice this asset, and explain the directional impact of each. Then describe the undeniable multi-year secular tailwinds and headwinds that are fundamentally driving revenue growth or compressing margins, distinguishing between macro forces the company cannot control and structural competitive dynamics it can influence. If the business is undergoing a fundamental transition — shifting from high-growth cash burn to mature cash cow, or experiencing structural margin degradation — quantify that inflection precisely and assess whether the current market pricing reflects it.
 
+LENGTH MANDATE — THIS IS CRITICAL:
+Each of the seven sections must be written to its full analytical depth. Do not truncate a section because you have covered the headline point — go deeper. For each section, after writing your initial analysis, ask yourself: what have I not yet examined? What nuance have I glossed over? What second-order implication have I not traced through? Then write that. A section on financial strength is not complete after one paragraph on leverage — it must cover leverage, interest coverage, cash conversion cycle mechanics with actual day counts, the full Owner's Earnings walk-through with every line sourced, ROIC versus cost of capital across multiple years, balance sheet stress testing, and a verdict on capital allocation quality. Every section should be thorough enough that a sophisticated investor could not reasonably ask "but what about X?" and find that X was not addressed. The total report should run to several thousand words. Do not stop writing a section until you have genuinely exhausted what the data and research supports saying.
+
 Remember: every assertion must be backed by evidence. Every number must have a source. Every management quote must be verbatim and cited. Present the ground truth, not a sales pitch."""
 
 
@@ -652,7 +655,9 @@ def generate_report_nvidia(company_name, ticker, financials_text, transcripts, f
             headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
             json={
                 "model": "nvidia/llama-3.1-nemotron-ultra-253b-v1",
-                "max_tokens": 16000,
+                "max_tokens": 32000,
+                "temperature": 0.6,
+                "top_p": 0.95,
                 "messages": [{"role": "user", "content": prompt}],
             },
             timeout=300,
