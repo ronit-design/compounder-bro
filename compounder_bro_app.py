@@ -2,6 +2,9 @@ import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
 import requests
+import io
+import re
+from datetime import datetime
 
 # ── Config ────────────────────────────────────────────────────────────────────
 API_KEY  = "73d3049608e044f1a63182f51656c760"
@@ -214,7 +217,7 @@ hr {{
 /* ── Summary table ── */
 .tbl-row {{
     display: grid;
-    grid-template-columns: 1.6fr 0.6fr 0.9fr 0.9fr 0.75fr 0.9fr 0.75fr 0.9fr 0.75fr 0.75fr 0.75fr;
+    grid-template-columns: 1.4fr 0.55fr 0.85fr 0.85fr 0.7fr 0.85fr 0.7fr 0.85fr 0.7fr 0.7fr 0.7fr;
     padding: 0.6rem 0;
     border-bottom: 1px solid {C_BORDER2};
     align-items: center;
@@ -335,6 +338,293 @@ def fetch_year_end_price(ticker, month):
     idx = monthly.groupby("year")["date"].idxmax()
     result = monthly.loc[idx].set_index("year")[close_col].sort_index()
     return result, result.index.astype(str).tolist()
+
+
+# ── Earnings transcript + research report ────────────────────────────────────
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_transcript(ticker, year, quarter):
+    """Fetch a single earnings call transcript."""
+    url = f"{BASE_URL}/company/earnings-calls/transcript/{ticker}"
+    params = {"year": year, "quarter": quarter, "apikey": API_KEY}
+    try:
+        r = requests.get(url, params=params, timeout=15)
+        r.raise_for_status()
+        data = r.json()
+        if isinstance(data, dict):
+            return data.get("transcript", data.get("text", str(data)))
+        return str(data)
+    except:
+        return None
+
+def fetch_last_4_transcripts(ticker):
+    """Fetch the last 4 available quarterly transcripts."""
+    from datetime import datetime
+    transcripts = []
+    now = datetime.now()
+    year = now.year
+    quarter = (now.month - 1) // 3 + 1
+    attempts = 0
+    while len(transcripts) < 4 and attempts < 12:
+        text = fetch_transcript(ticker, year, quarter)
+        if text and len(str(text)) > 100:
+            transcripts.append({"year": year, "quarter": quarter, "text": str(text)[:8000]})
+        quarter -= 1
+        if quarter < 1:
+            quarter = 4
+            year -= 1
+        attempts += 1
+    return transcripts
+
+def format_financials_for_prompt(inc, bs, cf, years):
+    """Format key financial data as compact text for the AI prompt."""
+    def s(df, *cols):
+        for c in cols:
+            if c in df.columns:
+                return pd.to_numeric(df[c], errors="coerce")
+        return pd.Series(dtype=float)
+
+    lines = ["=== INCOME STATEMENT (last 5 years) ==="]
+    recent_years = years[-5:] if len(years) >= 5 else years
+    recent_idx = slice(-len(recent_years), None)
+
+    rev  = s(inc, "is_sales_revenue_turnover", "is_sales_and_services_revenues").iloc[recent_idx].tolist()
+    gp   = s(inc, "is_gross_profit").iloc[recent_idx].tolist()
+    ebit = s(inc, "ebit").iloc[recent_idx].tolist()
+    ni   = s(inc, "is_net_income").iloc[recent_idx].tolist()
+    eps  = s(inc, "diluted_eps").iloc[recent_idx].tolist()
+    gm   = s(inc, "gross_margin").iloc[recent_idx].tolist()
+    opm  = s(inc, "oper_margin").iloc[recent_idx].tolist()
+    npm  = s(inc, "profit_margin").iloc[recent_idx].tolist()
+
+    for i, y in enumerate(recent_years):
+        def v(lst): 
+            try: return f"{lst[i]/1e9:.2f}B" if lst[i] and not pd.isna(lst[i]) else "N/A"
+            except: return "N/A"
+        def pct(lst):
+            try: return f"{lst[i]:.1f}%" if lst[i] and not pd.isna(lst[i]) else "N/A"
+            except: return "N/A"
+        def ep(lst):
+            try: return f"${lst[i]:.2f}" if lst[i] and not pd.isna(lst[i]) else "N/A"
+            except: return "N/A"
+        lines.append(f"{y}: Rev={v(rev)}, GrossProfit={v(gp)}, EBIT={v(ebit)}, NetIncome={v(ni)}, EPS={ep(eps)}, GM={pct(gm)}, OM={pct(opm)}, NM={pct(npm)}")
+
+    lines.append("\n=== BALANCE SHEET (latest year) ===")
+    if not bs.empty:
+        def bv(col):
+            try:
+                val = float(bs[col].iloc[-1]) if col in bs.columns and pd.notna(bs[col].iloc[-1]) else None
+                return f"{val/1e9:.2f}B" if val else "N/A"
+            except: return "N/A"
+        lines.append(f"Total Assets={bv('bs_tot_asset')}, Total Equity={bv('bs_total_equity')}, Net Debt={bv('net_debt')}")
+        lines.append(f"Current Assets={bv('bs_cur_asset_report')}, Current Liabilities={bv('bs_cur_liab')}")
+
+    lines.append("\n=== CASH FLOW (last 5 years) ===")
+    if not cf.empty:
+        fcf = s(cf, "cf_free_cash_flow").iloc[recent_idx].tolist()
+        cfo = s(cf, "cf_cash_from_oper").iloc[recent_idx].tolist()
+        dep = s(cf, "cf_depr_amort").iloc[recent_idx].tolist()
+        cap = s(cf, "cf_cap_expenditures").iloc[recent_idx].tolist()
+        cf_years = cf["Date"].dt.year.astype(str).tolist() if "Date" in cf.columns else recent_years
+        cf_recent = cf_years[-5:] if len(cf_years) >= 5 else cf_years
+        for i, y in enumerate(cf_recent):
+            def cv(lst):
+                try: return f"{lst[i]/1e9:.2f}B" if lst[i] and not pd.isna(lst[i]) else "N/A"
+                except: return "N/A"
+            lines.append(f"{y}: CFO={cv(cfo)}, FCF={cv(fcf)}, D&A={cv(dep)}, CapEx={cv(cap)}")
+
+    return "\n".join(lines)
+
+def generate_research_report(company_name, ticker, financials_text, transcripts, web_context):
+    """Call Claude API to generate the research report."""
+    transcript_text = ""
+    if transcripts:
+        transcript_text = "\n\n=== EARNINGS CALL TRANSCRIPTS (last 4 quarters) ==="
+        for t in transcripts:
+            transcript_text += f"\n\nQ{t['quarter']} {t['year']} Transcript (excerpt):\n{t['text'][:4000]}"
+    else:
+        transcript_text = "\n\n=== EARNINGS CALL TRANSCRIPTS ===\nNo transcripts available."
+
+    web_section = f"\n\n=== WEB RESEARCH ===\n{web_context}" if web_context else ""
+
+    prompt = f"""Act as a senior equity analyst at Berkshire Hathaway. I need you to conduct a comprehensive, fundamental deep-dive into {company_name} ({ticker}). I have provided you with their financial statements, recent earnings transcripts, and web research below.
+
+We are looking for a business with a durable competitive advantage, rational management, and strong cash-generating ability. Do not give me fluff or Wall Street jargon; give me the raw business reality.
+
+CRITICAL INSTRUCTIONS ON ACCURACY & HALLUCINATION:
+* Zero Tolerance for Hallucination: Double-check every figure against the provided data. Do not infer, estimate, or invent data.
+* Strict Redaction Rule: If a specific metric or fact is not in the provided data, write [REDACTED - INSUFFICIENT DATA].
+* Source Your Claims: Follow every number with its source (e.g., [IS 2024], [BS 2024], [Q4 2024 Call]).
+
+DATA PROVIDED:
+{financials_text}{transcript_text}{web_section}
+
+Please structure your analysis into these sections:
+
+1. BUSINESS OVERVIEW & UNIT ECONOMICS
+- How exactly do they make money?
+- Break down unit economics with revenue, direct cost, and margin per unit.
+
+2. COMPETITIVE PROFILE & THE MOAT
+- Industry structure: consolidated or fragmented?
+- Durable competitive advantage with evidence from the data.
+
+3. CUSTOMER PREFERENCES & SUPPLY CHAIN
+- Why do customers choose this business? Are preferences shifting?
+- Supply chain dynamics and pricing power.
+
+4. FINANCIAL HEALTH & CAPITAL ALLOCATION
+- Debt analysis and interest coverage ratio.
+- Working capital efficiency and cash conversion cycle.
+- Owner's Earnings calculation: Net Income + D&A +/- Working Capital changes - Maintenance CapEx.
+
+5. GROWTH OUTLOOK & CATALYSTS
+- Realistic long-term growth runway from the data.
+- Specific upcoming catalysts, separating temporary from structural.
+
+Remember: Act like a business owner evaluating a multi-decade investment. Stick strictly to the facts provided."""
+
+    try:
+        r = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={"Content-Type": "application/json"},
+            json={
+                "model": "claude-sonnet-4-20250514",
+                "max_tokens": 4000,
+                "messages": [{"role": "user", "content": prompt}]
+            },
+            timeout=120,
+        )
+        r.raise_for_status()
+        data = r.json()
+        return data["content"][0]["text"]
+    except Exception as e:
+        return f"Error generating report: {e}"
+
+def build_report_pdf(company, ticker, report_text, transcripts):
+    """Build a clean, professional PDF from the report text using reportlab."""
+    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+    from reportlab.lib.units import cm
+    from reportlab.lib import colors
+    from reportlab.platypus import (
+        SimpleDocTemplate, Paragraph, Spacer, HRFlowable, KeepTogether
+    )
+    from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_JUSTIFY
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=A4,
+        leftMargin=2.2*cm, rightMargin=2.2*cm,
+        topMargin=2.5*cm, bottomMargin=2.5*cm,
+    )
+
+    # Colours
+    BLACK  = colors.HexColor("#111111")
+    DARK   = colors.HexColor("#333333")
+    MID    = colors.HexColor("#555555")
+    LIGHT  = colors.HexColor("#999999")
+    RULE   = colors.HexColor("#E0E0E0")
+
+    # Styles
+    cover_title = ParagraphStyle("cover_title",
+        fontName="Helvetica-Bold", fontSize=22, leading=28,
+        textColor=BLACK, spaceAfter=6, alignment=TA_LEFT)
+    cover_sub = ParagraphStyle("cover_sub",
+        fontName="Helvetica", fontSize=11, leading=15,
+        textColor=MID, spaceAfter=4, alignment=TA_LEFT)
+    cover_meta = ParagraphStyle("cover_meta",
+        fontName="Helvetica", fontSize=9, leading=12,
+        textColor=LIGHT, alignment=TA_LEFT)
+    disclaimer_style = ParagraphStyle("disc",
+        fontName="Helvetica-Oblique", fontSize=7.5, leading=10,
+        textColor=LIGHT, spaceAfter=16)
+    sec_heading = ParagraphStyle("sec_heading",
+        fontName="Helvetica-Bold", fontSize=12, leading=16,
+        textColor=BLACK, spaceBefore=14, spaceAfter=4, alignment=TA_LEFT)
+    body_style = ParagraphStyle("body",
+        fontName="Helvetica", fontSize=9.5, leading=14,
+        textColor=DARK, spaceBefore=0, spaceAfter=5,
+        alignment=TA_JUSTIFY)
+    bullet_style = ParagraphStyle("bullet",
+        fontName="Helvetica", fontSize=9.5, leading=14,
+        textColor=DARK, leftIndent=14, spaceBefore=1, spaceAfter=2)
+    redacted_style = ParagraphStyle("redacted",
+        fontName="Helvetica-Oblique", fontSize=9, leading=12,
+        textColor=LIGHT, spaceAfter=3)
+    footer_style = ParagraphStyle("footer",
+        fontName="Helvetica", fontSize=8, leading=10,
+        textColor=LIGHT, alignment=TA_CENTER)
+
+    story = []
+    now = datetime.now().strftime("%d %B %Y")
+
+    # Cover block
+    story.append(Spacer(1, 0.8*cm))
+    story.append(Paragraph(company, cover_title))
+    story.append(Paragraph(f"Equity Research Report  \u00b7  {ticker}", cover_sub))
+    tc = f"{len(transcripts)} transcript(s) used" if transcripts else "No transcripts"
+    story.append(Paragraph(f"Generated {now}  \u00b7  {tc}  \u00b7  Berkshire-style fundamental analysis", cover_meta))
+    story.append(Spacer(1, 0.3*cm))
+    story.append(HRFlowable(width="100%", thickness=1.5, color=BLACK, spaceAfter=14))
+    story.append(Paragraph(
+        "This report is AI-generated for informational purposes only and does not constitute investment advice. "
+        "All figures are sourced from roic.ai. Verify all data independently before making investment decisions.",
+        disclaimer_style))
+
+    def clean_md(text):
+        """Convert markdown to reportlab XML."""
+        # Escape & first
+        text = text.replace("&", "&amp;")
+        # Bold
+        text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
+        # Italic
+        text = re.sub(r"\*(.+?)\*", r"<i>\1</i>", text)
+        # Inline code
+        text = re.sub(r"`(.+?)`", r"<font face='Courier'>\1</font>", text)
+        return text.strip()
+
+    def add_body(text):
+        for line in text.split("\n"):
+            line = line.strip()
+            if not line:
+                story.append(Spacer(1, 3))
+                continue
+            if "[REDACTED" in line:
+                story.append(Paragraph(clean_md(line), redacted_style))
+            elif line.startswith(("- ", "* ", "\u2022 ")):
+                story.append(Paragraph("\u2022\u00a0\u00a0" + clean_md(line[2:]), bullet_style))
+            else:
+                story.append(Paragraph(clean_md(line), body_style))
+
+    # Split on section headings (1. TITLE or **1. TITLE**)
+    section_re = re.compile(r"(?m)^(?:\*\*)?(\d+[\.\:]\s+[A-Z][A-Z0-9 &\'\-\/\(\)]+)(?:\*\*)?")
+    parts = section_re.split(report_text)
+
+    # Preamble before first section
+    if parts[0].strip():
+        add_body(parts[0])
+
+    i = 1
+    while i < len(parts) - 1:
+        heading  = parts[i].strip().strip("*").strip()
+        body_txt = parts[i+1] if i+1 < len(parts) else ""
+        story.append(KeepTogether([
+            HRFlowable(width="100%", thickness=0.5, color=RULE, spaceBefore=8, spaceAfter=6),
+            Paragraph(heading, sec_heading),
+        ]))
+        add_body(body_txt)
+        i += 2
+
+    # Footer
+    story.append(Spacer(1, 1*cm))
+    story.append(HRFlowable(width="100%", thickness=0.5, color=RULE, spaceAfter=4))
+    story.append(Paragraph(
+        f"Compounder  \u00b7  {company} ({ticker})  \u00b7  Generated {now}  \u00b7  For informational use only",
+        footer_style))
+
+    doc.build(story)
+    buf.seek(0)
+    return buf.read()
 
 
 # ── Number helpers ────────────────────────────────────────────────────────────
@@ -521,10 +811,24 @@ with st.sidebar:
     page = st.radio("", ["Overview", "Company"], label_visibility="collapsed")
 
     if page == "Company":
-        st.markdown('<div style="font-size:0.68rem;color:#999;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:0.5rem">Company</div>', unsafe_allow_html=True)
-        selected = st.selectbox("", list(STOCKS.keys()), label_visibility="collapsed")
+        st.markdown('<div style="font-size:0.68rem;color:#999;text-transform:uppercase;letter-spacing:0.08em;margin-bottom:0.5rem">Watchlist</div>', unsafe_allow_html=True)
+        watchlist_choice = st.selectbox("", ["— Enter ticker below —"] + list(STOCKS.keys()), label_visibility="collapsed")
 
-    st.markdown("<br>" * 6, unsafe_allow_html=True)
+        st.markdown('<div style="font-size:0.68rem;color:#999;text-transform:uppercase;letter-spacing:0.08em;margin-top:1rem;margin-bottom:0.3rem">Any Ticker</div>', unsafe_allow_html=True)
+        custom_ticker = st.text_input("", placeholder="e.g. NVDA, META, 7203.T", label_visibility="collapsed").strip().upper()
+
+        # Resolve which ticker to use
+        if custom_ticker:
+            selected_ticker  = custom_ticker
+            selected_company = custom_ticker
+        elif watchlist_choice != "— Enter ticker below —":
+            selected_ticker  = STOCKS[watchlist_choice]
+            selected_company = watchlist_choice
+        else:
+            selected_ticker  = None
+            selected_company = None
+
+    st.markdown("<br>" * 4, unsafe_allow_html=True)
     st.markdown('<div style="font-size:0.68rem;color:#ccc">Live from roic.ai</div>', unsafe_allow_html=True)
     if st.button("Refresh"):
         st.cache_data.clear()
@@ -575,7 +879,7 @@ if page == "Overview":
         npm_s = safe(inc, "profit_margin")
 
         rev_cagr, rev_n = calc_cagr(rev_s)
-        oi_cagr,  oi_n  = calc_cagr(oi_s)
+        ni_cagr,  ni_n  = calc_cagr(ni_s)
 
         rows.append({
             "Company":      company,
@@ -588,7 +892,7 @@ if page == "Overview":
             "Net Profit":   fmt_currency(latest(ni_s)),
             "Net Margin":   fmt_pct(latest(npm_s)),
             "Rev CAGR":     fmt_cagr(rev_cagr, rev_n),
-            "Op CAGR":      fmt_cagr(oi_cagr,  oi_n),
+            "NI CAGR":      fmt_cagr(ni_cagr,  ni_n),
             # keep raw for charts
             "_rev": latest(rev_s),
             "_oi":  latest(oi_s),
@@ -599,7 +903,7 @@ if page == "Overview":
 
     # Render HTML table
     header_cols = ["Company", "Ticker", "Revenue", "Gross Profit", "GP Margin",
-                   "Op Profit", "Op Margin", "Net Profit", "Net Margin", "Rev CAGR", "Op CAGR"]
+                   "Op Profit", "Op Margin", "Net Profit", "Net Margin", "Rev CAGR", "NI CAGR"]
 
     header_html = "".join(f'<span class="tbl-header">{h}</span>' for h in header_cols)
     st.markdown(f'''<div class="tbl-row tbl-header-row">{header_html}</div>''',
@@ -608,9 +912,6 @@ if page == "Overview":
     for r in rows:
         def cell(key, cls="tbl-cell"):
             return f'<span class="{cls}">{r.get(key, "—")}</span>'
-
-        rev_cagr_val = r.get("Rev CAGR", "—")
-        oi_cagr_val  = r.get("Op CAGR",  "—")
 
         def cagr_span(val):
             if val == "—": return '<span class="tbl-cell" style="color:#ccc">—</span>'
@@ -629,8 +930,8 @@ if page == "Overview":
             {cell("Op Margin")}
             {cell("Net Profit")}
             {cell("Net Margin")}
-            {cagr_span(rev_cagr_val)}
-            {cagr_span(oi_cagr_val)}
+            {cagr_span(r.get("Rev CAGR", "—"))}
+            {cagr_span(r.get("NI CAGR", "—"))}
         </div>''', unsafe_allow_html=True)
 
     st.markdown("<br>", unsafe_allow_html=True)
@@ -684,17 +985,25 @@ if page == "Overview":
 # COMPANY DEEP DIVE
 # ══════════════════════════════════════════════════════════════════════════════
 else:
-    ticker     = STOCKS[selected]
-    fe_month   = {"RYAAY": 3, "CPRT": 7, "CSU.TO": 12, "FICO": 9,
-                  "SPGI": 12, "MCO": 12, "ASML": 12}.get(ticker, 12)
+    if not selected_ticker:
+        st.markdown('<div class="page-title">Company</div>', unsafe_allow_html=True)
+        st.markdown('<div class="page-sub">Select a company from the watchlist or enter any ticker in the sidebar.</div>', unsafe_allow_html=True)
+        st.stop()
 
-    with st.spinner(""):
+    ticker   = selected_ticker
+    company  = selected_company
+
+    WATCHLIST_FE = {"RYAAY": 3, "CPRT": 7, "CSU.TO": 12, "FICO": 9,
+                    "SPGI": 12, "MCO": 12, "ASML": 12}
+    fe_month = WATCHLIST_FE.get(ticker, 12)
+
+    with st.spinner(f"Loading {ticker}..."):
         inc = fetch_fundamental("fundamental/income-statement", ticker)
         bs  = fetch_fundamental("fundamental/balance-sheet",    ticker)
         cf  = fetch_fundamental("fundamental/cash-flow",        ticker)
 
     if inc.empty:
-        st.error(f"No data returned for {ticker}. The API may be unavailable or the ticker may have changed.")
+        st.error(f"No data returned for {ticker}. Check the ticker is correct and listed on a supported exchange.")
         st.stop()
 
     years    = inc["Date"].dt.year.astype(str).tolist() if "Date" in inc.columns else [str(i) for i in range(len(inc))]
@@ -751,8 +1060,8 @@ else:
     npm_l = latest(npm_s)
     gm_l  = latest(gm_s)
 
-    # Header — clean, typographic only
-    st.markdown(f'<div class="page-title">{selected}</div>', unsafe_allow_html=True)
+    # Header
+    st.markdown(f'<div class="page-title">{company}</div>', unsafe_allow_html=True)
     st.markdown(f'<div class="page-sub">{ticker}</div>', unsafe_allow_html=True)
 
     # ── KPI row ────────────────────────────────────────────────────────────────
@@ -767,7 +1076,7 @@ else:
     st.markdown("<br>", unsafe_allow_html=True)
 
     # ── Tabs — no emojis ──────────────────────────────────────────────────────
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["Revenue", "Margins", "Cash Flow", "Valuation", "Working Capital"])
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["Revenue", "Margins", "Cash Flow", "Valuation", "Working Capital", "Research Report"])
 
     # TAB 1 — Revenue
     with tab1:
@@ -1068,6 +1377,57 @@ else:
             ] for i in range(len(bs_years))}
         }).set_index("Metric")
         st.dataframe(wc_display, use_container_width=True)
+
+    # TAB 6 — Research Report
+    with tab6:
+        st.markdown('<div style="font-size:0.82rem;color:#555;margin-bottom:1.5rem;line-height:1.6">'
+                    'Generates a comprehensive equity research report in the style of a Berkshire Hathaway analyst. '
+                    'Uses the last 20 years of financial statements, last 4 earnings call transcripts, and web research. '
+                    'Takes approximately 30–60 seconds.', unsafe_allow_html=True)
+
+        generate_btn = st.button("Generate Report")
+
+        if generate_btn:
+            with st.spinner("Fetching earnings transcripts..."):
+                transcripts = fetch_last_4_transcripts(ticker)
+
+            with st.spinner("Searching the web..."):
+                try:
+                    search_resp = requests.get(
+                        f"https://lite.duckduckgo.com/lite/?q={ticker}+{company}+annual+report+business+model",
+                        headers={"User-Agent": "Mozilla/5.0"},
+                        timeout=10
+                    )
+                    web_context = search_resp.text[:3000] if search_resp.ok else ""
+                except:
+                    web_context = ""
+
+            with st.spinner("Generating report..."):
+                financials_text = format_financials_for_prompt(inc, bs, cf, years)
+                report_text = generate_research_report(company, ticker, financials_text, transcripts, web_context)
+
+            # Show inline
+            st.markdown("---")
+            st.markdown(report_text)
+            st.markdown("---")
+
+            # Build PDF
+            with st.spinner("Building PDF..."):
+                pdf_bytes = build_report_pdf(company, ticker, report_text, transcripts)
+
+            st.download_button(
+                label="Download PDF",
+                data=pdf_bytes,
+                file_name=f"{ticker}_research_report.pdf",
+                mime="application/pdf",
+            )
+
+            if transcripts:
+                labels = ", ".join([f"Q{t['quarter']} {t['year']}" for t in transcripts])
+                st.markdown(f'<div style="font-size:0.72rem;color:#999;margin-top:0.5rem">'
+                            f'Transcripts used: {labels}</div>', unsafe_allow_html=True)
+        else:
+            st.markdown('<div style="color:#ccc;font-size:0.8rem">Click Generate Report to begin.</div>', unsafe_allow_html=True)
 
     # Raw data — tucked away, quiet
     st.markdown("<br>", unsafe_allow_html=True)
