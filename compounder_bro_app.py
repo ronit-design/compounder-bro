@@ -715,18 +715,36 @@ NOW WRITE ONLY THE FOLLOWING SECTION:
     ]
 
     try:
+        import re as _re_assemble
         report_parts = []
+
         for heading, instructions in sections:
             section_prompt = data_block + f"{heading}\n\n{instructions}"
             text = _call_nvidia([{"role": "user", "content": section_prompt}], api_key)
-            if text:
-                # Strip any re-stated heading the model adds (we already have it)
-                text = text.strip()
-                report_parts.append(text)
+            if not text:
+                continue
+
+            text = text.strip()
+
+            # The model often restates the heading it was given — strip any leading
+            # heading lines so we control exactly one heading per section
+            # Remove lines that look like a section heading at the very start
+            lines = text.split("\n")
+            while lines and _re_assemble.match(r"^\d+[.\)\s]", lines[0].strip()):
+                lines.pop(0)
+            # Also strip any blank lines left at top after heading removal
+            while lines and not lines[0].strip():
+                lines.pop(0)
+            body = "\n".join(lines).strip()
+
+            # Re-attach the canonical heading we control
+            section_text = f"{heading}\n\n{body}"
+            report_parts.append(section_text)
 
         if not report_parts:
             return "NVIDIA returned empty responses for all sections."
 
+        # Join with double newline — each part already starts with its heading
         full_report = "\n\n".join(report_parts)
         return _clean_report(full_report)
 
@@ -830,8 +848,9 @@ def _clean_report(text):
     """Strip preamble, markdown, bullet points, and fix currency rendering."""
     import re as _re
 
-    # Remove preamble before first section heading (handles "1. THE FOUNDATION..." format)
-    m = _re.search(r"(?m)^1[.\)]\s+", text)
+    # Strip anything before the first section heading
+    # Matches "1. THE FOUNDATION..." or "1. BUSINESS..." etc.
+    m = _re.search(r"(?m)^1[.\)]\s+(?:THE\s+)?[A-Z]", text)
     if m:
         text = text[m.start():]
 
