@@ -827,17 +827,32 @@ def yoy(l, p):
         return (l - p) / abs(p) * 100
     return None
 
-def fmt_currency(val):
-    """Render dollar amounts with clean rounding — no false precision."""
+# Currency symbol map — ISO 4217 codes to symbols
+_CCY_SYMBOLS = {
+    "USD": "$", "EUR": "€", "GBP": "£", "JPY": "¥", "CNY": "¥",
+    "INR": "₹", "CAD": "C$", "AUD": "A$", "CHF": "CHF ", "KRW": "₩",
+    "HKD": "HK$", "SGD": "S$", "SEK": "SEK ", "NOK": "NOK ", "DKK": "DKK ",
+    "BRL": "R$", "MXN": "MX$", "ZAR": "R ", "TWD": "NT$", "THB": "฿",
+    "IDR": "Rp", "MYR": "RM", "ILS": "₪", "SAR": "SAR ", "AED": "AED ",
+}
+
+def ccy_symbol(currency_code):
+    """Return the symbol for a currency code, falling back to the code itself."""
+    if not currency_code:
+        return "$"
+    return _CCY_SYMBOLS.get(str(currency_code).upper(), str(currency_code).upper() + " ")
+
+def fmt_currency(val, ccy="$"):
+    """Render a monetary value with correct currency symbol and clean rounding."""
     try:
         v = float(val)
         if pd.isna(v): return "—"
         neg = v < 0
         v = abs(v)
-        if v >= 1e12:   s = f"${v/1e12:.1f}T"
-        elif v >= 1e9:  s = f"${v/1e9:.1f}B"
-        elif v >= 1e6:  s = f"${v/1e6:.0f}M"
-        else:           s = f"${v:,.0f}"
+        if v >= 1e12:   s = f"{ccy}{v/1e12:.1f}T"
+        elif v >= 1e9:  s = f"{ccy}{v/1e9:.1f}B"
+        elif v >= 1e6:  s = f"{ccy}{v/1e6:.0f}M"
+        else:           s = f"{ccy}{v:,.0f}"
         return f"({s})" if neg else s
     except:
         return "—"
@@ -859,11 +874,11 @@ def fmt_multiple(val):
     except:
         return "—"
 
-def fmt_eps(val):
+def fmt_eps(val, ccy="$"):
     try:
         v = float(val)
         if pd.isna(v): return "—"
-        return f"${v:.2f}"
+        return f"{ccy}{v:.2f}"
     except:
         return "—"
 
@@ -1050,27 +1065,33 @@ if page == "Overview":
         opm_s = safe(inc, "oper_margin")
         npm_s = safe(inc, "profit_margin")
 
+        # Get reporting currency
+        ccy_code = inc["currency"].iloc[-1] if "currency" in inc.columns and len(inc) > 0 else "USD"
+        ccy = ccy_symbol(ccy_code)
+
         rev_cagr, rev_n = calc_cagr(rev_s)
         ni_cagr,  ni_n  = calc_cagr(ni_s)
 
         rows.append({
             "Company":      company,
             "Ticker":       ticker,
-            "Revenue":      fmt_currency(latest(rev_s)),
-            "Gross Profit": fmt_currency(latest(gp_s)),
+            "Revenue":      fmt_currency(latest(rev_s), ccy),
+            "Gross Profit": fmt_currency(latest(gp_s), ccy),
             "GP Margin":    fmt_pct(latest(gm_s)),
-            "Op Profit":    fmt_currency(latest(oi_s)),
+            "Op Profit":    fmt_currency(latest(oi_s), ccy),
             "Op Margin":    fmt_pct(latest(opm_s)),
-            "Net Profit":   fmt_currency(latest(ni_s)),
+            "Net Profit":   fmt_currency(latest(ni_s), ccy),
             "Net Margin":   fmt_pct(latest(npm_s)),
             "Rev CAGR":     fmt_cagr(rev_cagr, rev_n),
             "NI CAGR":      fmt_cagr(ni_cagr,  ni_n),
             # keep raw for charts
-            "_rev": latest(rev_s),
-            "_oi":  latest(oi_s),
-            "_ni":  latest(ni_s),
-            "_opm": latest(opm_s),
-            "_npm": latest(npm_s),
+            "_rev":  latest(rev_s),
+            "_oi":   latest(oi_s),
+            "_ni":   latest(ni_s),
+            "_opm":  latest(opm_s),
+            "_npm":  latest(npm_s),
+            "_ccy":  ccy,
+            "_ccy_code": str(ccy_code),
         })
 
     # Render HTML table
@@ -1114,22 +1135,28 @@ if page == "Overview":
     chart_opm   = [to_pct_list([r.get("_opm")])[0] if r.get("_opm") is not None else 0 for r in rows if r.get("_rev")]
     chart_npm   = [to_pct_list([r.get("_npm")])[0] if r.get("_npm") is not None else 0 for r in rows if r.get("_rev")]
 
-    # Revenue chart
+    # Revenue chart — use each company's own currency for hover
     st.markdown('<span class="section-label">Revenue</span>', unsafe_allow_html=True)
     if chart_names:
+        hover_texts = []
+        for r in [r for r in rows if r.get("_rev")]:
+            ccy = r.get("_ccy", "$")
+            v   = r.get("_rev", 0)
+            hover_texts.append(f"{ccy}{v/1e9:.1f}B")
         fig_rev = go.Figure(go.Bar(
             x=chart_names,
             y=[v/1e9 for v in chart_rev],
             marker_color=C_ACCENT,
             marker_line_width=0,
-            hovertemplate="%{x}<br>$%{y:.1f}B<extra></extra>",
+            text=hover_texts,
+            hovertemplate="%{x}<br>%{text}<extra></extra>",
         ))
         fig_rev.update_layout(**CHART_BASE)
         fig_rev.update_layout(
             height=260, bargap=0.45, showlegend=False,
             yaxis=dict(showgrid=True, gridcolor=C_BORDER2, ticksuffix="B",
-                       tickprefix="$", tickfont=dict(size=10, color=C_TEXT3),
-                       zeroline=False, showline=False),
+                       tickfont=dict(size=10, color=C_TEXT3),
+                       zeroline=False, showline=True, linecolor=C_BORDER),
         )
         st.plotly_chart(fig_rev, use_container_width=True, config={"displayModeBar": False})
 
@@ -1181,6 +1208,10 @@ else:
     years    = inc["Date"].dt.year.astype(str).tolist() if "Date" in inc.columns else [str(i) for i in range(len(inc))]
     cf_years = cf["Date"].dt.year.astype(str).tolist()  if not cf.empty and "Date" in cf.columns else years
     n        = len(years)  # canonical length — all series must match this
+
+    # Reporting currency for this company
+    ccy_code = str(inc["currency"].iloc[-1]) if "currency" in inc.columns and len(inc) > 0 else "USD"
+    ccy      = ccy_symbol(ccy_code)          # e.g. "₹", "€", "$"
 
     # Series — all aligned to n (income statement row count)
     rev_s    = align(safe(inc, "is_sales_revenue_turnover", "is_sales_and_services_revenues"), n)
@@ -1238,12 +1269,12 @@ else:
 
     # ── KPI row ────────────────────────────────────────────────────────────────
     k1, k2, k3, k4, k5, k6 = st.columns(6)
-    kpi_block(k1, "Revenue",       fmt_currency(rev_l),  yoy(rev_l, rev_p))
-    kpi_block(k2, "Free Cash Flow",fmt_currency(fcf_l),  yoy(fcf_l, fcf_p))
+    kpi_block(k1, "Revenue",       fmt_currency(rev_l, ccy),  yoy(rev_l, rev_p))
+    kpi_block(k2, "Free Cash Flow",fmt_currency(fcf_l, ccy),  yoy(fcf_l, fcf_p))
     kpi_block(k3, "Gross Margin",  fmt_pct(gm_l))
     kpi_block(k4, "Operating Margin", fmt_pct(opm_l))
     kpi_block(k5, "Net Margin",    fmt_pct(npm_l))
-    kpi_block(k6, "EPS",           fmt_eps(eps_l),       yoy(eps_l, eps_p))
+    kpi_block(k6, "EPS",           fmt_eps(eps_l, ccy),  yoy(eps_l, eps_p))
 
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -1309,15 +1340,21 @@ else:
         with c1:
             if fcf_s.notna().any():
                 fcf_b = [v/1e9 if v and not pd.isna(v) else None for v in fcf_s]
-                st.plotly_chart(make_bar(cf_years, fcf_b, "Free Cash Flow  ($B)", height=260),
-                                use_container_width=True, config={"displayModeBar": False})
+                fig_fcf = make_bar(cf_years, fcf_b, f"Free Cash Flow  ({ccy_code}, B)", height=260)
+                fig_fcf.update_layout(yaxis=dict(showgrid=True, gridcolor=C_BORDER2,
+                    tickprefix=ccy, ticksuffix="B", tickfont=dict(size=10, color=C_TEXT3),
+                    zeroline=False, showline=True, linecolor=C_BORDER))
+                st.plotly_chart(fig_fcf, use_container_width=True, config={"displayModeBar": False})
             else:
                 st.markdown('<span style="color:#999;font-size:0.82rem">No free cash flow data</span>', unsafe_allow_html=True)
         with c2:
             if cfo_s.notna().any():
                 cfo_b = [v/1e9 if v and not pd.isna(v) else None for v in cfo_s]
-                st.plotly_chart(make_bar(cf_years, cfo_b, "Operating Cash Flow  ($B)", height=260, color="#555555"),
-                                use_container_width=True, config={"displayModeBar": False})
+                fig_cfo = make_bar(cf_years, cfo_b, f"Operating Cash Flow  ({ccy_code}, B)", height=260, color="#555555")
+                fig_cfo.update_layout(yaxis=dict(showgrid=True, gridcolor=C_BORDER2,
+                    tickprefix=ccy, ticksuffix="B", tickfont=dict(size=10, color=C_TEXT3),
+                    zeroline=False, showline=True, linecolor=C_BORDER))
+                st.plotly_chart(fig_cfo, use_container_width=True, config={"displayModeBar": False})
 
         if fcf_s.notna().any() and ni_s.notna().any():
             st.markdown("<br>", unsafe_allow_html=True)
@@ -1339,9 +1376,9 @@ else:
         if price_s.notna().any():
             fig_px = make_line(years, [price_s.tolist()], ["Price"],
                                "Year-End Stock Price  ($)", height=300)
-            fig_px.update_layout(yaxis=dict(tickprefix="$", showgrid=True,
+            fig_px.update_layout(yaxis=dict(tickprefix=ccy, showgrid=True,
                                              gridcolor=C_BORDER2, tickfont=dict(size=10, color=C_TEXT3),
-                                             zeroline=False, showline=False))
+                                             zeroline=False, showline=True, linecolor=C_BORDER))
             st.plotly_chart(fig_px, use_container_width=True, config={"displayModeBar": False})
         else:
             # Fall back to full daily price history
@@ -1358,8 +1395,8 @@ else:
                 ))
                 fig_px.update_layout(**CHART_BASE)
                 fig_px.update_layout(height=300, showlegend=False,
-                    yaxis=dict(tickprefix="$", showgrid=True, gridcolor=C_BORDER2,
-                               tickfont=dict(size=10, color=C_TEXT3), zeroline=False, showline=False))
+                    yaxis=dict(tickprefix=ccy, showgrid=True, gridcolor=C_BORDER2,
+                               tickfont=dict(size=10, color=C_TEXT3), zeroline=False, showline=True, linecolor=C_BORDER))
                 st.plotly_chart(fig_px, use_container_width=True, config={"displayModeBar": False})
             else:
                 st.markdown('<span style="color:#999;font-size:0.82rem">Price data not available.</span>', unsafe_allow_html=True)
@@ -1496,7 +1533,7 @@ else:
         wc_kpi(w2, "Inventory Days", fmt_days(inv_l),  fmt_days_delta(inv_list))
         wc_kpi(w3, "DPO",            fmt_days(dpo_l),  fmt_days_delta(dpo_list))
         wc_kpi(w4, "Cash Cycle",     fmt_days(ccc_l),  fmt_days_delta(ccc_list))
-        wc_kpi(w5, "NWC (Latest)",   fmt_currency(nwc_l))
+        wc_kpi(w5, "NWC (Latest)",   fmt_currency(nwc_l, ccy))
 
         st.markdown("<br>", unsafe_allow_html=True)
 
@@ -1522,8 +1559,8 @@ else:
         if any(v for v in nwc_list if v is not None):
             fig_nwc = make_bar(bs_years,
                                [v/1e9 if v is not None else None for v in nwc_list],
-                               "Net Working Capital  ($B)", height=260)
-            fig_nwc.update_layout(yaxis=dict(tickprefix="$", ticksuffix="B", showgrid=True,
+                               f"Net Working Capital  ({ccy_code}, B)", height=260)
+            fig_nwc.update_layout(yaxis=dict(tickprefix=ccy, ticksuffix="B", showgrid=True,
                                               gridcolor=C_BORDER2, tickfont=dict(size=10, color=C_TEXT3),
                                               zeroline=True, zerolinecolor=C_BORDER, showline=False))
             st.plotly_chart(fig_nwc, use_container_width=True, config={"displayModeBar": False})
@@ -1537,7 +1574,7 @@ else:
         wc_df["Inventory Days"] = [fmt_days(v) for v in inv_list]
         wc_df["DPO"]            = [fmt_days(v) for v in dpo_list]
         wc_df["Cash Cycle"]     = [fmt_days(v) for v in ccc_list]
-        wc_df["NWC"]            = [fmt_currency(v) for v in nwc_list]
+        wc_df["NWC"]            = [fmt_currency(v, ccy) for v in nwc_list]
         wc_display = pd.DataFrame({
             "Metric":         ["DSO", "Inventory Days", "DPO", "Cash Cycle", "NWC"],
             **{bs_years[i]: [
@@ -1545,7 +1582,7 @@ else:
                 fmt_days(inv_list[i]),
                 fmt_days(dpo_list[i]),
                 fmt_days(ccc_list[i]),
-                fmt_currency(nwc_list[i]),
+                fmt_currency(nwc_list[i], ccy),
             ] for i in range(len(bs_years))}
         }).set_index("Metric")
         st.dataframe(wc_display, use_container_width=True)
