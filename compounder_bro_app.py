@@ -590,46 +590,51 @@ def fetch_10k_text(ticker):
 def _build_prompt(company_name, ticker, financials_text, transcript_text,
                   extra_context="", source_note=""):
     """Shared prompt template used by both NVIDIA and Haiku paths."""
-    return f"""You are a seasoned portfolio manager at a long-only, concentrated equity fund. You have spent your career studying exceptional businesses and you have a sharp eye for separating durable competitive advantages from temporary tailwinds. Your fund holds positions for five to ten years minimum and your partners expect you to present rigorous, evidence-based investment ideas that can withstand hard scrutiny. You are writing a deep-dive research note on {company_name} ({ticker}) for your investment committee.
+    return f"""MASTER AI INSTRUCTION: THE OBJECTIVITY MANDATE
+You must remain ruthlessly objective and strictly unbiased. Your mandate is not to pitch a long or short position, but to uncover the absolute ground truth of the business. Present both structural strengths and fatal flaws with equal clinical detachment. Do not sugarcoat poor capital allocation, and do not dismiss durable moats. Analyze the data without emotion; it does not matter if the company looks good or bad to the reader.
 
-{source_note}
+You are writing a comprehensive research report on {company_name} ({ticker}) for a sophisticated investment committee. {source_note}
 
-Your job is not to summarise — it is to form a point of view and back it up relentlessly with facts, numbers, and logic. Every claim must be evidenced. Every assertion must be tested against the data. Where you find something impressive, say why it is impressive and prove it. Where you find a weakness, call it out clearly and quantify it. Do not hedge everything. Take positions.
+ACCURACY & SOURCING RULES — ZERO TOLERANCE:
+Every financial figure must be sourced inline immediately after the number, e.g. (FY2024 Income Statement), (FY2024 Balance Sheet), (FY2024 Cash Flow Statement). Every piece of management commentary must include a direct verbatim quote where available, followed by its source, e.g. CEO John Smith stated "we expect margins to expand by 200 basis points" (Q3 2024 Earnings Call). Every fact from the SEC filing must be cited, e.g. (10-K 2024, Business Section) or (20-F 2024, MD&A). Do not state any number without a source. Do not paraphrase management when a direct quote exists — use their exact words and cite the call. Before writing any number, double-check it against the provided data.
 
-SOURCING RULES:
-Every financial figure must be sourced inline immediately after the number, e.g. (FY2024 Income Statement), (FY2024 Balance Sheet), (FY2024 Cash Flow Statement). Every piece of management commentary or forward guidance must cite the specific earnings call it came from, e.g. (Q2 2024 Earnings Call). Every fact sourced from the SEC filing must note the form and year, e.g. (10-K 2024, Business Section) or (20-F 2024, MD&A). Do not state a number without a source. Do not attribute a quote without naming the call it came from.
+CURRENCY: State the reporting currency explicitly for every figure — "USD 4.2B", "EUR 890M", "INR 1.47T". Never use bare currency symbols.
 
-CURRENCY: State the reporting currency explicitly for every figure. Write "USD 4.2B" or "EUR 890M" or "INR 1.47T" — never use bare currency symbols.
+FORMATTING — ABSOLUTE AND NON-NEGOTIABLE:
+Write exclusively in continuous flowing prose. No bullet points, no dashes as list markers, no numbered sub-lists, no tables anywhere in the body. Every section must read like a chapter from a serious investment research book — dense, analytical paragraphs that build a sustained argument. Do not write one sentence per line. Every paragraph must be at minimum five sentences, containing a point, evidence from the data, analysis of what that evidence means, and a conclusion. Begin the report immediately with the first section heading — no preamble, no meta-commentary. Section headings must appear exactly as written below on their own line with no markdown characters.
 
-FORMATTING — ABSOLUTE RULES:
-Write exclusively in continuous, flowing prose. There must be no bullet points, no dashes used as list markers, no numbered sub-lists, and no tables anywhere in the body of the report. Every section must read like a chapter in a serious investment book — dense, analytical paragraphs that build a sustained argument. Do not write one sentence per line. Do not create orphaned single-sentence paragraphs. Every paragraph must be at minimum five sentences long and must contain a point, evidence for that point drawn from the data, analysis of what that evidence means, and a conclusion. Begin the report immediately with the first section heading — no preamble, no meta-commentary, no statement of what you are about to do. Section headings must appear exactly as written below, on their own line, with no markdown formatting characters.
-
-DATA PROVIDED TO YOU:
+DATA PROVIDED:
 {financials_text}{transcript_text}{extra_context}
 
-REPORT SECTIONS — write each section as directed:
+1. THE FOUNDATION: BUSINESS OVERVIEW & TANGIBLE SCALE
 
-1. BUSINESS OVERVIEW & UNIT ECONOMICS
+Stripped of all corporate jargon and marketing buzzwords, explain exactly what this business does and walk through the life cycle of a single dollar from the customer's wallet to the company's bank account. Then quantify the tangible scale of the operation with precision — exact physical assets such as number of retail locations, aircraft, manufacturing plants, or logistics hubs, or digital scale such as monthly active users, data centres, or compute capacity, sourced from the filing or financial statements. For each distinct operating segment, explain the exact mechanism for making money and state precisely what percentage of total revenue and operating profit that segment represents, using real figures. Define what a single "unit" of sale is for this business and calculate the true contribution margin of that unit — revenue minus strictly variable costs — and identify at what volume the business breaks even. Spend substantial space here because understanding the precise economics of value creation and value leakage is the foundation of everything that follows.
 
-Open with a crisp explanation of what this business actually does in economic terms — not a corporate description but a clear articulation of the value exchange: what problem does it solve, who pays for it, and why. Then spend the bulk of this section breaking down the unit economics in granular detail. What does the company earn on a single transaction, contract, or customer relationship? Walk through the revenue line, the cost of delivering that revenue, and the resulting gross profit in real numbers from the financial statements. Trace how gross profit converts down to operating profit and then to free cash flow, identifying where value is created and where it leaks. Explain the margin structure — is the business high-gross-margin-low-operating-margin, or does it have genuine operating leverage? How have margins trended over the last five to ten years and what does that trend tell you about the underlying business model? This section should be long — at minimum five substantial paragraphs — because understanding the economics precisely is the foundation of everything that follows.
+2. THE BATTLEFIELD: INDUSTRY LANDSCAPE & COMPETITIVE PROFILE
 
-2. COMPETITIVE PROFILE & THE MOAT
+Describe the broader industry with precision: is it consolidated or highly fragmented, experiencing secular growth or structural decline, and what phase of the industry life cycle are we in. Name the top three to five direct competitors and identify in which specific arenas — geographic regions, product tiers, customer demographics — they directly clash with this company. Analyse how competitors fundamentally differ in their operating models, cost structures, vertical integration, and target audiences, using quantitative comparisons where the data supports it. Then prove the moat — do not simply name it. If the claim is network effects, explain precisely how adding one more user or customer makes the product more valuable and why a well-funded new entrant cannot replicate this. If the claim is cost advantage, show the actual cost gap in basis points and explain the structural source of it. If switching costs, quantify the financial, operational, and psychological friction a customer endures to replace this product. A named moat without a mechanism is not an investment insight — it is a platitude.
 
-Describe the industry structure with precision: how many meaningful competitors exist, what the market share distribution looks like, and whether the industry is consolidating or fragmenting. Then make a direct judgement on whether this company has a durable competitive advantage and, critically, what the source of that advantage is. A moat must have a mechanism — cost advantage, switching costs, network effects, intangible assets, or efficient scale — and you must identify it specifically and explain exactly how it works in this business. Then test whether the moat is holding. Look at gross margin trends, pricing power in recent years, customer retention patterns from the transcripts, and competitive wins or losses disclosed in the filings. A moat that is eroding is more dangerous than no moat at all because it creates false confidence. Be honest about what you see in the data. Conclude with a clear view on the quality and durability of the competitive position.
+3. THE GENERALS: MANAGEMENT, ALIGNMENT & TRACK RECORD
 
-3. CUSTOMER DYNAMICS & SUPPLY CHAIN
+Identify the key decision-makers — CEO, CFO, and COO — their background prior to this company, and how long they have held their current positions. Then audit the three to four most consequential strategic or capital allocation decisions made by this specific management team over the last decade, including major acquisitions, aggressive expansions, or pivots in strategy, and deliver a clear verdict on whether each decision created or destroyed shareholder value, backed by measurable outcomes. Examine insider ownership precisely: what percentage do executives and founders own, are they buying shares on the open market, and what does the pattern of stock-based compensation and insider selling tell you about their conviction in the business. Where earnings call transcripts are available, use direct verbatim quotes from management to assess their candour, strategic clarity, and willingness to acknowledge problems — quote them precisely and cite each call. Assess whether the incentive structures disclosed in the proxy or filing align management with long-term free cash flow per share and return on invested capital, or whether they are optimising for short-term adjusted metrics that flatter performance.
 
-Analyse the customer base in depth: who the customers are, how concentrated the revenue is across them, whether there are long-term contracts or sticky repeat purchasing patterns, and what the cost to the customer of switching would be. Use specific figures from the financial statements and filing to support every claim — revenue concentration disclosures, contract lengths, renewal rates where available. Then examine the supply chain: who are the key suppliers, what is the degree of concentration, and where does pricing power sit in the value chain — with the company, its suppliers, or its customers? Identify any structural vulnerabilities in the supply chain that could impair margins or continuity. Draw on earnings call commentary to assess whether management is actively addressing these dynamics or appears complacent.
+4. THE CHOKEPOINTS: CUSTOMER DYNAMICS & SUPPLY CHAIN
 
-4. FINANCIAL STRENGTH & CAPITAL ALLOCATION QUALITY
+Analyse the customer base with specificity: is revenue concentrated among a few large clients or distributed across millions of small ones, and is the purchase an operational necessity or highly discretionary. Quantify switching costs — what is the precise financial, operational, and psychological friction a customer endures to replace this product with a competitor's, and where has the company disclosed evidence of high retention, long contract durations, or high switching penalties in its filings. Examine the supply chain: does the company dictate pricing to its suppliers, or are they at the mercy of consolidated vendors with significant leverage. Identify any single points of failure in the supply chain that could halt operations or compress margins materially, and assess whether management has disclosed credible mitigation strategies, citing specific earnings call commentary or filing disclosures where available.
 
-This section must be forensically detailed. Begin with the balance sheet: total assets, equity, net debt position, and debt maturity profile where disclosed. Calculate and discuss the interest coverage ratio using operating income against interest expense from the income statement. Then turn to working capital: walk through the cash conversion cycle using days sales outstanding, days payable outstanding, and inventory days where applicable, and explain what the cycle tells you about the quality of the business — a negative or very short cash conversion cycle is a sign of extraordinary business quality and must be noted. Then perform the Owner's Earnings calculation in full, showing every line: start with reported net income, add back depreciation and amortisation, adjust for changes in working capital, and subtract an estimate of maintenance capital expenditure. Show each number and its source. Compare owner's earnings to reported net income and explain any significant divergence. Finally, analyse how management has deployed capital historically — acquisitions, buybacks, dividends, organic reinvestment — and whether the returns on that deployed capital have been attractive. Use return on invested capital or return on equity trends over multiple years to form a view on management's capital allocation skill.
+5. THE SCORECARD: FINANCIAL TRUTH & CAPITAL ALLOCATION
 
-5. GROWTH RUNWAY & KEY RISKS
+Begin with the balance sheet forensically: total assets, equity, net debt, and debt maturity profile. Calculate the interest coverage ratio using operating income against interest expense from the income statement and state what it tells you about financial fragility. Walk through the cash conversion cycle in full — days sales outstanding, days payable outstanding, and inventory days — and explain what the resulting cycle duration reveals about the quality of the business model; a negative cash conversion cycle is a mark of exceptional business quality and must be discussed explicitly if present. Perform the Owner's Earnings calculation showing every line with its source: reported net income, plus depreciation and amortisation, adjusted for working capital changes, minus maintenance capital expenditure. Compare the result to reported net income and explain any material divergence. Then analyse whether this company consistently generates a return on invested capital that exceeds its cost of capital across a full economic cycle, using multi-year ROIC data from the financial statements. Stress-test the balance sheet: could it survive a severe multi-year recession without dilutive equity issuance or insolvency risk. Finally assess capital allocation historically — acquisitions, buybacks, dividends, organic reinvestment — and deliver a verdict on whether management has been a good steward of shareholder capital.
 
-Lay out the realistic long-term growth opportunity with as much specificity as the data allows. What is the addressable market and what share does this company currently hold? What are the structural drivers that could expand either the market or the company's share within it? Anchor every growth claim in evidence — management guidance from earnings calls, disclosed pipeline, market size data from the filing, or observable revenue trends. Separate genuine structural growth from cyclical recovery or one-time tailwinds, and be explicit about which is which. Then turn to the key risks: not a laundry list, but the two or three factors that could permanently impair the long-term value of this business. For each risk, assess the probability of occurrence, the potential magnitude of damage to the business model, and whether management has disclosed any mitigating actions. Conclude with your overall view on whether the risk-reward balance is favourable for a long-term owner.
+6. THE ASYMMETRIC BET: GROWTH RUNWAY & THE KILL SHOT
 
-Remember: your investment committee has read a lot of mediocre research. They will not be impressed by description. They will be impressed by insight — a non-obvious observation backed by hard evidence that changes how a thoughtful person would think about this business. Find those moments in the data and build your paragraphs around them."""
+Quantify the realistic serviceable obtainable market taking geographic and regulatory constraints into account, state the current penetration rate, and explain the structural drivers that could expand either the market or the company's share within it anchored in evidence from the filing, earnings call guidance, or observable revenue trends. Separate genuine structural growth from cyclical recovery or one-time tailwinds explicitly. Then deliver the bear case — the highest-probability sequence of events, whether regulatory, competitive, or macroeconomic, that could cause this company to permanently lose fifty percent or more of its intrinsic value over the next five years. This must be a specific, mechanistic argument with a plausible chain of causation, not a generic list of risks. Assess the probability and magnitude of this scenario honestly and without minimisation.
+
+7. CATALYSTS & INFLECTION POINTS
+
+Identify the specific, trackable events over the next six to eighteen months — product launches, contract expirations, regulatory rulings, M&A closures — that will force the market to actively reprice this asset, and explain the directional impact of each. Then describe the undeniable multi-year secular tailwinds and headwinds that are fundamentally driving revenue growth or compressing margins, distinguishing between macro forces the company cannot control and structural competitive dynamics it can influence. If the business is undergoing a fundamental transition — shifting from high-growth cash burn to mature cash cow, or experiencing structural margin degradation — quantify that inflection precisely and assess whether the current market pricing reflects it.
+
+Remember: every assertion must be backed by evidence. Every number must have a source. Every management quote must be verbatim and cited. Present the ground truth, not a sales pitch."""
 
 
 def generate_report_nvidia(company_name, ticker, financials_text, transcripts, filing_text, form_type, filing_date):
@@ -762,8 +767,8 @@ def _clean_report(text):
     """Strip preamble, markdown, bullet points, and fix currency rendering."""
     import re as _re
 
-    # Remove preamble before first section heading
-    m = _re.search(r"(?m)^1[.\)]\s+[A-Z]", text)
+    # Remove preamble before first section heading (handles "1. THE FOUNDATION..." format)
+    m = _re.search(r"(?m)^1[.\)]\s+", text)
     if m:
         text = text[m.start():]
 
@@ -778,7 +783,7 @@ def _clean_report(text):
     def _debullet(m):
         line = m.group(1).strip()
         # Preserve section headings like "1. BUSINESS OVERVIEW"
-        if _re.match(r"^\d+[.\)]\s+[A-Z]{3}", line):
+        if _re.match(r"^\d+[.\)]\s+", line):
             return line
         if line and line[-1] not in ".!?:":
             line = line[0].upper() + line[1:] + "."
@@ -916,64 +921,72 @@ def build_report_pdf(company, ticker, report_text, transcripts, chart_figs=None)
             pass  # skip chart silently if kaleido not available
 
     # ── Parse and render report sections ─────────────────────────────────────
+    # Match headings like:
+    #   "1. THE FOUNDATION: BUSINESS OVERVIEW & TANGIBLE SCALE"
+    #   "2. THE BATTLEFIELD: INDUSTRY LANDSCAPE & COMPETITIVE PROFILE"
+    # Requires: digit, dot, space, then THE or all-caps word
     section_re = re.compile(
-        r"(?m)^(\d+[\.\)]\s+[A-Z][A-Z0-9 &\'\-\/\(\)]{2,})\s*$"
+        r"(?m)^(\d+[.\)]\s+(?:THE\s+)?[A-Z][A-Z0-9 :&'\-\/\(\),]{4,})\s*$"
     )
     parts = section_re.split(report_text)
 
-    # Any text before first heading
+    # Any text before first heading (preamble — should be empty after _clean_report)
     if parts[0].strip():
         for para in parts[0].strip().split("\n\n"):
             if para.strip():
                 story.append(Paragraph(para.strip(), s_body))
 
+    # Chart placement: section 1 (Foundation) → Revenue, section 5 (Scorecard) → FCF
     SECTION_CHART_MAP = {
-        "1": 0,  # Business Overview -> Revenue chart
-        "4": 1,  # Financial Health  -> FCF chart
+        "1": 0,  # THE FOUNDATION → Revenue chart
+        "5": 1,  # THE SCORECARD  → FCF chart
     }
 
     i = 1
-    section_num = 0
     while i < len(parts) - 1:
         heading  = parts[i].strip()
         body_txt = parts[i+1] if i+1 < len(parts) else ""
-        sec_num  = heading[0]
+        sec_num  = heading[0]  # "1", "2" … "7"
 
+        # Section break + heading
         story.append(KeepTogether([
-            hr(thick=0.4, before=2, after=2),
+            hr(thick=0.5, before=4, after=3),
             Paragraph(heading, s_sec),
         ]))
 
-        # Body paragraphs — split on double newline
+        # Body — split on double newline, render each as a prose paragraph
         paragraphs = [p.strip() for p in re.split(r"\n\n+", body_txt) if p.strip()]
         for para in paragraphs:
-            # Skip single-line "headers" that leaked through
-            if re.match(r"^[A-Z][A-Z\s&:]{3,}:?\s*$", para) and len(para) < 60:
+            # Detect sub-headings that leaked through (short all-caps lines)
+            if re.match(r"^[A-Z][A-Z\s&:]{4,}:?\s*$", para) and len(para) < 80:
+                story.append(Spacer(1, 3*mm))
                 story.append(Paragraph(para, s_sec))
-            else:
-                # Clean inline markdown
-                para = re.sub(r"\*{2}(.+?)\*{2}", r"<b>\1</b>", para)
-                para = re.sub(r"\*(.+?)\*",       r"<i>\1</i>", para)
-                para = para.replace("&", "&amp;")
-                story.append(Paragraph(para, s_body))
+                continue
+            # Convert inline markdown to reportlab XML
+            para = re.sub(r"\*{2}(.+?)\*{2}", r"<b>\1</b>", para, flags=re.DOTALL)
+            para = re.sub(r"\*(.+?)\*",        r"<i>\1</i>", para)
+            # Escape ampersands that aren't already XML entities
+            para = re.sub(r"&(?!amp;|lt;|gt;|quot;|apos;)", "&amp;", para)
+            story.append(Paragraph(para, s_body))
 
-        # Insert chart after relevant sections
+        # Embed chart after key sections
         if chart_figs and sec_num in SECTION_CHART_MAP:
             chart_idx = SECTION_CHART_MAP[sec_num]
             if chart_idx < len(chart_figs):
-                chart_title, chart_fig = chart_figs[chart_idx]
+                c_title, c_fig = chart_figs[chart_idx]
                 story.append(Spacer(1, 4*mm))
-                add_chart(chart_fig, chart_title)
+                add_chart(c_fig, c_title)
 
         i += 2
-        section_num += 1
 
-    # ── Remaining charts at end ───────────────────────────────────────────────
-    if chart_figs and len(chart_figs) > 2:
-        story.append(hr(before=4, after=4))
+    # ── All remaining charts appended after final section ────────────────────
+    placed = set(SECTION_CHART_MAP.values())
+    remaining = [(t, f) for idx, (t, f) in enumerate(chart_figs or []) if idx not in placed]
+    if remaining:
+        story.append(hr(before=6, after=4))
         story.append(Paragraph("FINANCIAL CHARTS", s_sec))
-        for chart_title, chart_fig in chart_figs[2:]:
-            add_chart(chart_fig, chart_title)
+        for c_title, c_fig in remaining:
+            add_chart(c_fig, c_title)
 
     # ── Footer ────────────────────────────────────────────────────────────────
     story.append(Spacer(1, 1*cm))
