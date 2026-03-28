@@ -640,79 +640,95 @@ Each of the seven sections must be written to its full analytical depth. Do not 
 Remember: every assertion must be backed by evidence. Every number must have a source. Every management quote must be verbatim and cited. Present the ground truth, not a sales pitch."""
 
 
+def _call_nvidia(messages, api_key, max_tokens=32000):
+    """Single NVIDIA API call. Returns text or raises."""
+    r = requests.post(
+        "https://integrate.api.nvidia.com/v1/chat/completions",
+        headers={"Content-Type": "application/json",
+                 "Authorization": f"Bearer {api_key}"},
+        json={
+            "model": "nvidia/llama-3.1-nemotron-ultra-253b-v1",
+            "max_tokens": max_tokens,
+            "temperature": 0.6,
+            "top_p": 0.95,
+            "messages": messages,
+        },
+        timeout=300,
+    )
+    r.raise_for_status()
+    msg = r.json()["choices"][0]["message"]
+    return str(msg.get("content") or msg.get("reasoning_content") or msg.get("text") or "").strip()
+
+
 def generate_report_nvidia(company_name, ticker, financials_text, transcripts, filing_text, form_type, filing_date):
     """
-    Use NVIDIA Nemotron with multi-turn continuation.
-    Chains up to 4 API calls — each time the model stops early we ask it to
-    continue, accumulating the full report before cleaning and returning it.
+    Section-by-section generation strategy.
+    Each of the 7 sections is requested in a separate API call with the full
+    data context but only the instructions for that one section.
+    This prevents any single call from hitting the token ceiling mid-report,
+    and lets each section receive the model's full attention and token budget.
     """
     transcript_text = _format_transcripts(transcripts)
     filing_section  = f"\n\n=== {form_type} FILING ({filing_date}) ===\n{filing_text[:60000]}" if filing_text else ""
-    source_note = f"I have provided the full {form_type} filing ({filing_date}), financial statements, and earnings transcripts."
-    prompt = _build_prompt(company_name, ticker, financials_text,
-                           transcript_text, filing_section, source_note)
+    source_note     = f"You have been provided the {form_type} filing ({filing_date}), financial statements, and earnings transcripts."
+    api_key         = st.secrets.get("NVIDIA_API_KEY", "")
 
-    api_key = st.secrets.get("NVIDIA_API_KEY", "")
-    hdrs = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
-    base_payload = {
-        "model": "nvidia/llama-3.1-nemotron-ultra-253b-v1",
-        "max_tokens": 32000,
-        "temperature": 0.6,
-        "top_p": 0.95,
-    }
+    # Shared data context — sent with every section call
+    data_block = f"""You are writing one section of a comprehensive equity research report on {company_name} ({ticker}) for a sophisticated investment committee. {source_note}
+
+OBJECTIVITY MANDATE: Remain ruthlessly objective. Present structural strengths and fatal flaws with equal clinical detachment. Analyze the data without emotion.
+
+SOURCING RULES: Every financial figure sourced inline, e.g. (FY2024 Income Statement). Every management quote must be verbatim and cited to the specific call, e.g. (Q3 2024 Earnings Call). Every SEC filing fact cited, e.g. (10-K 2024, Business Section). State currency explicitly: "USD 4.2B", "EUR 890M".
+
+FORMATTING: Continuous flowing prose only. No bullet points, no dashes as list markers, no sub-lists. Every paragraph minimum five sentences with a point, evidence, analysis, and conclusion. Write the section heading exactly as given on its own line with no markdown characters, then begin immediately.
+
+LENGTH: Write this section to its absolute maximum depth. Do not stop when you have covered the headline point — go deeper into every sub-dimension. A sophisticated investor should not be able to ask "but what about X?" and find X unaddressed. Exhaust everything the data supports.
+
+DATA:
+{financials_text}{transcript_text}{filing_section}
+
+NOW WRITE ONLY THE FOLLOWING SECTION:
+"""
+
+    # Section definitions — heading + specific instructions
+    sections = [
+        ("1. THE FOUNDATION: BUSINESS OVERVIEW & TANGIBLE SCALE",
+         "Stripped of all jargon, explain exactly what this business does and walk through the life cycle of a single dollar from the customer to the company. Quantify the exact physical or digital scale with sourced figures. For each operating segment state the exact revenue and operating profit contribution as a percentage. Define the unit of sale and calculate the true contribution margin. Trace gross profit down to operating profit and free cash flow, identifying where value is created and where it leaks. Explain the full margin structure trend over the last ten years and what it reveals about the business model."),
+
+        ("2. THE BATTLEFIELD: INDUSTRY LANDSCAPE & COMPETITIVE PROFILE",
+         "Describe the industry structure with precision — consolidated or fragmented, secular growth or decline, what phase of the cycle. Name the top three to five direct competitors and the specific arenas where they clash with this company. Analyse how they differ in operating model, cost structure, and target audience. Then prove the moat — do not name it, prove it mechanistically. Show exactly how the competitive advantage prevents a well-funded entrant from stealing share, with quantitative evidence."),
+
+        ("3. THE GENERALS: MANAGEMENT, ALIGNMENT & TRACK RECORD",
+         "Identify CEO, CFO, and COO — their background and tenure. Audit the three to four most consequential capital allocation decisions of this management team over the last decade and deliver a clear verdict on whether each created or destroyed value, with measured outcomes. Examine insider ownership precisely. Use direct verbatim quotes from earnings call transcripts where available, citing each call. Assess whether incentive structures align management with long-term free cash flow per share and ROIC, or short-term adjusted metrics."),
+
+        ("4. THE CHOKEPOINTS: CUSTOMER DYNAMICS & SUPPLY CHAIN",
+         "Analyse customer concentration precisely — is revenue distributed or whale-dependent, is the purchase a necessity or discretionary. Quantify switching costs with specific evidence from filings: contract durations, retention rates, switching penalties disclosed. Examine the supply chain — does the company dictate pricing or are they at the mercy of consolidated vendors. Identify any single points of failure that could halt operations and assess management's disclosed mitigation strategies with direct citation."),
+
+        ("5. THE SCORECARD: FINANCIAL TRUTH & CAPITAL ALLOCATION",
+         "Cover the balance sheet forensically: total assets, equity, net debt, debt maturity profile, and interest coverage ratio calculated from the income statement. Walk through the full cash conversion cycle — calculate DSO, DPO, and inventory days from the financial statements and explain what the cycle duration reveals. Perform the complete Owner's Earnings calculation showing every line with source: net income + D&A + working capital changes - maintenance capex. Analyse ROIC versus cost of capital across multiple years. Stress-test the balance sheet against a severe multi-year recession. Deliver a verdict on capital allocation quality across acquisitions, buybacks, dividends, and organic reinvestment."),
+
+        ("6. THE ASYMMETRIC BET: GROWTH RUNWAY & THE KILL SHOT",
+         "Quantify the realistic serviceable obtainable market with geographic and regulatory constraints, state current penetration, and explain the structural growth drivers anchored in evidence. Separate structural growth from cyclical recovery explicitly. Then deliver the bear case — the specific highest-probability sequence of events that could cause this company to permanently lose 50% or more of intrinsic value over five years. This must be a mechanistic argument with a causal chain, not a generic risk list. Assess probability and magnitude without minimisation."),
+
+        ("7. CATALYSTS & INFLECTION POINTS",
+         "Identify specific trackable events over the next 6 to 18 months that will force a market repricing and explain the directional impact of each with evidence. Describe the undeniable multi-year secular tailwinds and headwinds driving revenue or compressing margins, distinguishing macro forces from competitive dynamics. If the business is undergoing a fundamental transition, quantify the inflection precisely and assess whether current market pricing reflects it."),
+    ]
 
     try:
-        messages = [{"role": "user", "content": prompt}]
-        full_text = ""
-        max_turns = 4  # up to 4 × 32k = ~128k tokens of output
+        report_parts = []
+        for heading, instructions in sections:
+            section_prompt = data_block + f"{heading}\n\n{instructions}"
+            text = _call_nvidia([{"role": "user", "content": section_prompt}], api_key)
+            if text:
+                # Strip any re-stated heading the model adds (we already have it)
+                text = text.strip()
+                report_parts.append(text)
 
-        for turn in range(max_turns):
-            r = requests.post(
-                "https://integrate.api.nvidia.com/v1/chat/completions",
-                headers=hdrs,
-                json={**base_payload, "messages": messages},
-                timeout=300,
-            )
-            r.raise_for_status()
-            data  = r.json()
-            msg   = data["choices"][0]["message"]
-            chunk = (msg.get("content") or
-                     msg.get("reasoning_content") or
-                     msg.get("text") or "")
-            chunk = str(chunk).strip()
+        if not report_parts:
+            return "NVIDIA returned empty responses for all sections."
 
-            if not chunk:
-                break
-
-            full_text += ("\n\n" if full_text else "") + chunk
-
-            finish = data["choices"][0].get("finish_reason", "stop")
-
-            # If stopped naturally and all 7 sections are present, we're done
-            sections_present = sum(
-                1 for h in ["THE FOUNDATION", "THE BATTLEFIELD", "THE GENERALS",
-                            "THE CHOKEPOINTS", "THE SCORECARD", "ASYMMETRIC",
-                            "CATALYSTS"]
-                if h in full_text
-            )
-            if finish == "stop" and sections_present >= 7:
-                break
-
-            # Model stopped early — push the conversation forward and ask to continue
-            messages.append({"role": "assistant", "content": chunk})
-            messages.append({
-                "role": "user",
-                "content": (
-                    "Continue the report exactly where you left off. "
-                    "Do not repeat anything already written. "
-                    "Do not add any preamble — pick up mid-sentence if needed and keep going."
-                )
-            })
-
-        if not full_text or len(full_text) < 100:
-            return f"NVIDIA returned an empty response."
-
-        return _clean_report(full_text)
+        full_report = "\n\n".join(report_parts)
+        return _clean_report(full_report)
 
     except Exception as e:
         return f"Error generating report via NVIDIA: {e}"
