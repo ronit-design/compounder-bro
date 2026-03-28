@@ -434,8 +434,11 @@ def format_financials_for_prompt(inc, bs, cf, years):
 
     return "\n".join(lines)
 
-def generate_research_report(company_name, ticker, financials_text, transcripts, web_context):
-    """Call Claude API to generate the research report."""
+def generate_research_report(company_name, ticker, financials_text, transcripts):
+    """
+    Call Claude API with web_search tool enabled so it can research
+    the company itself before writing the report.
+    """
     transcript_text = ""
     if transcripts:
         transcript_text = "\n\n=== EARNINGS CALL TRANSCRIPTS (last 4 quarters) ==="
@@ -444,63 +447,113 @@ def generate_research_report(company_name, ticker, financials_text, transcripts,
     else:
         transcript_text = "\n\n=== EARNINGS CALL TRANSCRIPTS ===\nNo transcripts available."
 
-    web_section = f"\n\n=== WEB RESEARCH ===\n{web_context}" if web_context else ""
+    prompt = f"""Act as a senior equity analyst at Berkshire Hathaway. I need you to conduct a comprehensive, fundamental deep-dive into {company_name} ({ticker}).
 
-    prompt = f"""Act as a senior equity analyst at Berkshire Hathaway. I need you to conduct a comprehensive, fundamental deep-dive into {company_name} ({ticker}). I have provided you with their financial statements, recent earnings transcripts, and web research below.
+You have access to a web search tool. USE IT EXTENSIVELY before writing anything. Specifically you must search for:
+1. What does {company_name} ({ticker}) actually do — business model, products, services, customers
+2. Recent news, earnings results, and management commentary for {company_name}
+3. The competitive landscape and industry structure {company_name} operates in
+4. Any recent strategic developments, acquisitions, or threats
 
-We are looking for a business with a durable competitive advantage, rational management, and strong cash-generating ability. Do not give me fluff or Wall Street jargon; give me the raw business reality.
+Only after completing your web research should you write the report.
 
-CRITICAL INSTRUCTIONS ON ACCURACY & HALLUCINATION:
-* Zero Tolerance for Hallucination: Double-check every figure against the provided data. Do not infer, estimate, or invent data.
-* Strict Redaction Rule: If a specific metric or fact is not in the provided data, write [REDACTED - INSUFFICIENT DATA].
-* Source Your Claims: Follow every number with its source (e.g., [IS 2024], [BS 2024], [Q4 2024 Call]).
+I am also providing financial statements and earnings transcripts below.
 
-DATA PROVIDED:
-{financials_text}{transcript_text}{web_section}
+CRITICAL INSTRUCTIONS:
+* Use web search first to understand the business — do not write [REDACTED] for basic business facts you can find online
+* Zero Tolerance for Hallucination on financial figures — every number must come from the provided financial data
+* Source financial claims: [IS 2024], [BS 2024], [CF 2024], [Q4 2024 Call]
+* For qualitative facts from web research, cite the source URL or publication
 
-Please structure your analysis into these sections:
+FINANCIAL DATA PROVIDED:
+{financials_text}{transcript_text}
+
+Structure your report into these sections:
 
 1. BUSINESS OVERVIEW & UNIT ECONOMICS
-- How exactly do they make money?
-- Break down unit economics with revenue, direct cost, and margin per unit.
+- What exactly does this company do? How do they make money?
+- Key products/services, customer segments, and geographies
+- Unit economics: revenue per unit/customer, margins, pricing power
 
 2. COMPETITIVE PROFILE & THE MOAT
 - Industry structure: consolidated or fragmented?
-- Durable competitive advantage with evidence from the data.
+- What is their durable competitive advantage?
+- Evidence of moat: historical margin resilience, market share data
 
 3. CUSTOMER PREFERENCES & SUPPLY CHAIN
-- Why do customers choose this business? Are preferences shifting?
-- Supply chain dynamics and pricing power.
+- Why do customers choose this business over rivals?
+- Supply chain: who has the pricing power?
+- Any concentration risks or vulnerabilities
 
 4. FINANCIAL HEALTH & CAPITAL ALLOCATION
-- Debt analysis and interest coverage ratio.
-- Working capital efficiency and cash conversion cycle.
-- Owner's Earnings calculation: Net Income + D&A +/- Working Capital changes - Maintenance CapEx.
+- Debt analysis and interest coverage ratio [from financial data]
+- Working capital efficiency [from financial data]
+- Owner's Earnings: Net Income + D&A +/- WC changes - Maintenance CapEx [show your math]
 
 5. GROWTH OUTLOOK & CATALYSTS
-- Realistic long-term growth runway from the data.
-- Specific upcoming catalysts, separating temporary from structural.
+- Realistic long-term growth runway
+- Specific upcoming catalysts: separate temporary tailwinds from structural advantages
 
-Remember: Act like a business owner evaluating a multi-decade investment. Stick strictly to the facts provided."""
+Remember: You are a business owner evaluating a multi-decade investment. Search the web thoroughly, then write with conviction."""
 
+    api_key = st.secrets.get("ANTHROPIC_API_KEY", "")
+    headers = {
+        "Content-Type": "application/json",
+        "x-api-key": api_key,
+        "anthropic-version": "2023-06-01",
+    }
+
+    # First call — with web search tool enabled
     try:
-        r = requests.post(
-            "https://api.anthropic.com/v1/messages",
-            headers={
-                "Content-Type": "application/json",
-                "x-api-key": st.secrets.get("ANTHROPIC_API_KEY", ""),
-                "anthropic-version": "2023-06-01",
-            },
-            json={
-                "model": "claude-sonnet-4-20250514",
-                "max_tokens": 4000,
-                "messages": [{"role": "user", "content": prompt}]
-            },
-            timeout=120,
-        )
+        payload = {
+            "model": "claude-sonnet-4-20250514",
+            "max_tokens": 8000,
+            "tools": [{"type": "web_search_20250305", "name": "web_search"}],
+            "messages": [{"role": "user", "content": prompt}],
+        }
+        r = requests.post("https://api.anthropic.com/v1/messages",
+                          headers=headers, json=payload, timeout=180)
         r.raise_for_status()
         data = r.json()
-        return data["content"][0]["text"]
+
+        # Handle tool use loop — keep going until Claude stops using tools
+        messages = [{"role": "user", "content": prompt}]
+        max_rounds = 8
+
+        for _ in range(max_rounds):
+            messages.append({"role": "assistant", "content": data["content"]})
+
+            # Check if done
+            if data.get("stop_reason") == "end_turn":
+                break
+
+            # Collect any tool results needed
+            tool_results = []
+            for block in data["content"]:
+                if block.get("type") == "tool_use":
+                    # web_search results come back automatically in next turn
+                    tool_results.append({
+                        "type": "tool_result",
+                        "tool_use_id": block["id"],
+                        "content": "Search completed."
+                    })
+
+            if not tool_results:
+                break
+
+            messages.append({"role": "user", "content": tool_results})
+
+            r2 = requests.post("https://api.anthropic.com/v1/messages",
+                               headers=headers,
+                               json={**payload, "messages": messages},
+                               timeout=180)
+            r2.raise_for_status()
+            data = r2.json()
+
+        # Extract all text from final response
+        text_parts = [b["text"] for b in data["content"] if b.get("type") == "text"]
+        return "\n\n".join(text_parts) if text_parts else "No report generated."
+
     except Exception as e:
         return f"Error generating report: {e}"
 
@@ -1395,20 +1448,9 @@ else:
             with st.spinner("Fetching earnings transcripts..."):
                 transcripts = fetch_last_4_transcripts(ticker)
 
-            with st.spinner("Searching the web..."):
-                try:
-                    search_resp = requests.get(
-                        f"https://lite.duckduckgo.com/lite/?q={ticker}+{company}+annual+report+business+model",
-                        headers={"User-Agent": "Mozilla/5.0"},
-                        timeout=10
-                    )
-                    web_context = search_resp.text[:3000] if search_resp.ok else ""
-                except:
-                    web_context = ""
-
-            with st.spinner("Generating report..."):
+            with st.spinner("Researching company and generating report (30–90 seconds)..."):
                 financials_text = format_financials_for_prompt(inc, bs, cf, years)
-                report_text = generate_research_report(company, ticker, financials_text, transcripts, web_context)
+                report_text = generate_research_report(company, ticker, financials_text, transcripts)
 
             # Show inline
             st.markdown("---")
