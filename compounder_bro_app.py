@@ -437,42 +437,32 @@ def format_financials_for_prompt(inc, bs, cf, years):
 # ── EDGAR 10-K / 20-F fetcher ────────────────────────────────────────────────
 
 def edgar_get_cik(ticker):
-    """Look up a company's CIK from its ticker via EDGAR full-text search."""
+    """Look up CIK using SEC's official company_tickers.json — most reliable method."""
     try:
-        # EDGAR ticker → CIK mapping
-        r = requests.get(
-            "https://efts.sec.gov/LATEST/search-index?q=%22" + ticker + "%22&dateRange=custom&startdt=2020-01-01&forms=10-K,20-F",
-            headers={"User-Agent": "compounder-app research@example.com"},
-            timeout=10,
-        )
-        # Simpler: use the company tickers JSON
-        r2 = requests.get(
-            "https://www.sec.gov/files/company_tickers.json",
-            headers={"User-Agent": "compounder-app research@example.com"},
-            timeout=10,
-        )
-        r2.raise_for_status()
-        tickers_data = r2.json()
-        ticker_upper = ticker.upper().replace(".TO", "").replace(".NS", "").replace(".L", "")
-        for entry in tickers_data.values():
-            if entry.get("ticker", "").upper() == ticker_upper:
+        hdrs = {"User-Agent": "compounder-app research@example.com"}
+        r = requests.get("https://www.sec.gov/files/company_tickers.json",
+                         headers=hdrs, timeout=15)
+        r.raise_for_status()
+        t_upper = ticker.upper()
+        for entry in r.json().values():
+            if entry.get("ticker", "").upper() == t_upper:
                 return str(entry["cik_str"]).zfill(10)
         return None
     except:
         return None
 
+
 def edgar_latest_filing(cik, form_type):
-    """Find the most recent 10-K or 20-F filing for a CIK."""
+    """Return (accession_no_dashes, filing_date) for the most recent matching form."""
     try:
-        url = f"https://data.sec.gov/submissions/CIK{cik}.json"
-        r = requests.get(url, headers={"User-Agent": "compounder-app research@example.com"}, timeout=10)
+        hdrs = {"User-Agent": "compounder-app research@example.com"}
+        r = requests.get(f"https://data.sec.gov/submissions/CIK{cik}.json",
+                         headers=hdrs, timeout=15)
         r.raise_for_status()
-        data  = r.json()
-        filings = data.get("filings", {}).get("recent", {})
-        forms   = filings.get("form", [])
-        accnums = filings.get("accessionNumber", [])
-        dates   = filings.get("filingDate", [])
-        # Find most recent matching form
+        recent = r.json().get("filings", {}).get("recent", {})
+        forms   = recent.get("form", [])
+        accnums = recent.get("accessionNumber", [])
+        dates   = recent.get("filingDate", [])
         for i, form in enumerate(forms):
             if form in (form_type, form_type + "/A"):
                 return accnums[i].replace("-", ""), dates[i]
@@ -480,91 +470,118 @@ def edgar_latest_filing(cik, form_type):
     except:
         return None, None
 
-def edgar_fetch_filing_text(cik, accession, max_chars=80000):
+
+def edgar_fetch_filing_text(cik, accession_no_dashes, max_chars=80000):
     """
-    Fetch the actual filing text from EDGAR.
-    Returns extracted text from Business, Risk Factors, and MD&A sections.
+    Fetch Business (Item 1) and MD&A (Item 7) from an EDGAR filing.
+    Uses the filing index JSON to find the primary document reliably.
     """
+    import re as _re
+    hdrs = {"User-Agent": "compounder-app research@example.com"}
+
     try:
-        # Get filing index
-        acc_fmt = f"{accession[:10]}/{accession[10:12]}/{accession[12:]}"
-        index_url = f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/{accession}/{accession}-index.htm"
-        r = requests.get(index_url, headers={"User-Agent": "compounder-app research@example.com"}, timeout=10)
+        # Format accession for URL: 0001234567890123 -> 0001234567/89/0123
+        acc = accession_no_dashes
+        acc_dashes = f"{acc[:10]}-{acc[10:12]}-{acc[12:]}"
+        cik_int = int(cik)
 
-        if not r.ok:
-            # Try index.json instead
-            index_url2 = f"https://data.sec.gov/submissions/CIK{cik}/filings/{accession}.json"
-            # Fall back to direct document listing
-            idx_url = f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={int(cik)}&type=10-K&dateb=&owner=include&count=1&search_text=&output=atom"
+        # Use the filing index JSON — much more reliable than parsing HTML index
+        idx_url = f"https://data.sec.gov/submissions/CIK{cik}.json"
+        # Actually use the index JSON for this specific accession
+        index_json_url = (f"https://www.sec.gov/cgi-bin/browse-edgar"
+                          f"?action=getcompany&CIK={cik_int}&type=10-K"
+                          f"&dateb=&owner=include&count=1&search_text=")
 
-        # Parse the index to find the primary document
-        import re as _re
-        links = _re.findall(r'href="(/Archives/edgar/data/[^"]+\.htm)"', r.text, _re.IGNORECASE)
-        # Pick the largest .htm file (likely the full filing)
+        # Direct approach: fetch the filing index page
+        idx_page_url = (f"https://www.sec.gov/Archives/edgar/data/"
+                        f"{cik_int}/{acc}/{acc_dashes}-index.htm")
+        r_idx = requests.get(idx_page_url, headers=hdrs, timeout=15)
+
+        if not r_idx.ok:
+            # Try without leading zeros in cik
+            idx_page_url = (f"https://www.sec.gov/Archives/edgar/data/"
+                            f"{cik_int}/{acc_dashes.replace('-','')}/{acc_dashes}-index.htm")
+            r_idx = requests.get(idx_page_url, headers=hdrs, timeout=15)
+
+        # Find the primary document — look for the largest .htm that isn't an exhibit
         doc_url = None
-        for link in links:
-            if accession.replace("-", "") in link.replace("/", "").replace("-", ""):
-                doc_url = "https://www.sec.gov" + link
-                break
-        if not doc_url and links:
-            doc_url = "https://www.sec.gov" + links[0]
+        if r_idx.ok:
+            # Parse table rows to find document type and href
+            rows = _re.findall(
+                r'<tr[^>]*>.*?</tr>', r_idx.text, _re.DOTALL | _re.IGNORECASE)
+            candidates = []
+            for row in rows:
+                href_m = _re.search(r'href="(/Archives[^"]+\.htm)"', row, _re.IGNORECASE)
+                type_m = _re.search(r'<td[^>]*>\s*(10-K|20-F|FORM 10-K|FORM 20-F)\s*</td>', row, _re.IGNORECASE)
+                if href_m and type_m:
+                    candidates.append("https://www.sec.gov" + href_m.group(1))
+            if not candidates:
+                # Broader search — any .htm link containing the accession
+                all_links = _re.findall(r'href="(/Archives/edgar/data/[^"]+\.htm)"',
+                                        r_idx.text, _re.IGNORECASE)
+                candidates = ["https://www.sec.gov" + l for l in all_links
+                              if acc.lower() in l.lower().replace("-", "").replace("/", "")]
+            if candidates:
+                doc_url = candidates[0]
 
         if not doc_url:
             return None
 
-        doc_r = requests.get(doc_url, headers={"User-Agent": "compounder-app research@example.com"}, timeout=30)
-        raw_html = doc_r.text
+        r_doc = requests.get(doc_url, headers=hdrs, timeout=60)
+        if not r_doc.ok:
+            return None
 
-        # Strip HTML tags
-        text = _re.sub(r"<[^>]+>", " ", raw_html)
-        text = _re.sub(r"&nbsp;", " ", text)
-        text = _re.sub(r"&amp;", "&", text)
-        text = _re.sub(r"\s{3,}", "\n\n", text)
-        text = text.strip()
+        # Clean HTML to text
+        text = _re.sub(r"<[^>]{1,200}>", " ", r_doc.text)
+        text = text.replace("&nbsp;", " ").replace("&amp;", "&").replace("&#160;", " ")
+        text = _re.sub(r"\s{3,}", "\n\n", text).strip()
 
-        # Extract key sections: Item 1 (Business), Item 1A (Risk Factors), Item 7 (MD&A)
+        # Extract Item 1 (Business) and Item 7 (MD&A)
         sections = {}
-        # Extract Business (Item 1) and MD&A (Item 7) only — faster and cheaper
         patterns = [
-            ("BUSINESS", r"(?i)item\s+1[.\s]+business\b", r"(?i)item\s+1a[.\s]"),
-            ("MD&A",     r"(?i)item\s+7[.\s]+management.{0,50}discussion", r"(?i)item\s+7a[.\s]"),
+            ("BUSINESS",
+             r"(?i)item\s*1[\s.]+business\b",
+             r"(?i)item\s*1a[\s.]+risk"),
+            ("MD&A",
+             r"(?i)item\s*7[\s.]+management.{0,60}?discussion",
+             r"(?i)item\s*7a[\s.]+"),
         ]
         for name, start_pat, end_pat in patterns:
-            m_start = _re.search(start_pat, text)
-            m_end   = _re.search(end_pat, text[m_start.end():]) if m_start else None
-            if m_start:
-                snippet_start = m_start.start()
-                snippet_end   = m_start.end() + m_end.start() if m_end else m_start.start() + 25000
-                sections[name] = text[snippet_start:snippet_end][:25000]
+            m_s = _re.search(start_pat, text)
+            if not m_s:
+                continue
+            tail  = text[m_s.end():]
+            m_e   = _re.search(end_pat, tail)
+            chunk = tail[:m_e.start()] if m_e else tail[:30000]
+            sections[name] = chunk[:25000].strip()
 
         if sections:
-            combined = ""
+            out = ""
             for name, txt in sections.items():
-                combined += f"\n\n=== {name} ===\n{txt}"
-            return combined[:max_chars]
+                out += f"\n\n=== {name} ===\n{txt}"
+            return out[:max_chars]
 
-        # Fallback: return middle portion of doc (skip boilerplate at start/end)
+        # Fallback: mid-document slice
         return text[5000:5000 + max_chars]
 
-    except Exception as e:
+    except Exception:
         return None
+
 
 def fetch_10k_text(ticker):
     """
-    Main entry point. Returns (filing_text, form_type, filing_date) or (None, None, None).
-    Tries 10-K first, then 20-F.
+    Main entry: CIK lookup → filing search → text extraction.
+    Returns (text, form_type, date) or (None, None, None).
     """
     cik = edgar_get_cik(ticker)
     if not cik:
         return None, None, None
-
     for form in ("10-K", "20-F"):
-        accession, date = edgar_latest_filing(cik, form)
-        if accession:
-            text = edgar_fetch_filing_text(cik, accession)
-            if text and len(text) > 1000:
+        acc, date = edgar_latest_filing(cik, form)
+        if acc:
+            text = edgar_fetch_filing_text(cik, acc)
+            if text and len(text) > 500:
                 return text, form, date
-
     return None, None, None
 
 
