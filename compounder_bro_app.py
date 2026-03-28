@@ -601,7 +601,7 @@ Every financial figure must be sourced inline immediately after the number, e.g.
 CURRENCY: State the reporting currency explicitly for every figure — "USD 4.2B", "EUR 890M", "INR 1.47T". Never use bare currency symbols.
 
 FORMATTING — ABSOLUTE AND NON-NEGOTIABLE:
-Write exclusively in continuous flowing prose. No bullet points, no dashes as list markers, no numbered sub-lists, no tables anywhere in the body. Every section must read like a chapter from a serious investment research book — dense, analytical paragraphs that build a sustained argument. Do not write one sentence per line. Every paragraph must be at minimum five sentences, containing a point, evidence from the data, analysis of what that evidence means, and a conclusion. Begin the report immediately with the first section heading — no preamble, no meta-commentary. Section headings must appear exactly as written below on their own line with no markdown characters.
+Write exclusively in continuous flowing prose. No bullet points, no sub-headings, no dashes as list markers, no numbered sub-lists, no tables anywhere in the body. Every section must read like a chapter from a serious investment research book — dense, analytical paragraphs that build a sustained argument. Do not write one sentence per line. Every paragraph must be at minimum five sentences, containing a point, evidence from the data, analysis of what that evidence means, and a conclusion. Begin the report immediately with the first section heading — no preamble, no meta-commentary. Section headings must appear exactly as written below on their own line with no markdown characters.
 
 DATA PROVIDED:
 {financials_text}{transcript_text}{extra_context}
