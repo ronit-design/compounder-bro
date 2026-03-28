@@ -468,13 +468,15 @@ CRITICAL INSTRUCTIONS:
 FINANCIAL DATA PROVIDED:
 {financials_text}{transcript_text}
 
-FORMATTING RULES — CRITICAL:
-* Write in flowing, professional prose as a senior analyst would. Do not use bullet points anywhere in the report.
+FORMATTING RULES — NON-NEGOTIABLE:
+* Every single section must be written as continuous flowing paragraphs. Absolutely no bullet points, dashes, numbered lists, or any list formatting of any kind, anywhere in the document.
 * Do not include any preamble, meta-commentary, or statements about what you are about to do. Begin the report directly with the first section heading.
 * Section headings must be written EXACTLY as: "1. BUSINESS OVERVIEW & UNIT ECONOMICS" on its own line, nothing else on that line. No markdown symbols (#, ##, **, *) anywhere.
-* Write each section as 3-5 substantive paragraphs of continuous prose.
+* Write each section as 3-5 substantial paragraphs of continuous prose. Each paragraph should be at least 4 sentences long.
+* If you find yourself wanting to use a bullet point or dash to list items, rewrite it as a sentence instead. For example, instead of "- Revenue grew 10%" write "Revenue grew 10% during the period."
+* Every paragraph must be fully developed — a minimum of 4 complete sentences that build on each other. No orphaned single-sentence paragraphs. No half-finished thoughts. No trailing incomplete observations. If a point is worth making, it must be made fully with context, evidence, and conclusion.
 * When citing financial sources write inline e.g. (FY2024 Income Statement) not [IS 2024].
-* All currency figures: if the company reports in a non-USD currency, state the currency clearly e.g. "INR 1.47B" not symbols.
+* All currency figures: state the currency clearly e.g. "INR 1.47B" not symbols.
 
 REPORT STRUCTURE:
 
@@ -505,7 +507,7 @@ Remember: You are a business owner evaluating a multi-decade investment. Search 
     # First call — with web search tool enabled
     try:
         payload = {
-            "model": "claude-sonnet-4-20250514",
+            "model": "claude-haiku-4-5-20251001",
             "max_tokens": 8000,
             "tools": [{"type": "web_search_20250305", "name": "web_search"}],
             "messages": [{"role": "user", "content": prompt}],
@@ -559,29 +561,42 @@ Remember: You are a business owner evaluating a multi-decade investment. Search 
 
 
 def _clean_report(text):
-    """Strip preamble, markdown symbols, and fix currency rendering."""
-    import re
+    """Strip preamble, markdown, bullet points, and fix currency rendering."""
+    import re as _re
 
-    # Remove any preamble before the first numbered section heading
-    match = re.search(r"(?m)^1[\.\)]\s+[A-Z]", text)
-    if match:
-        text = text[match.start():]
+    # Remove preamble before first section heading
+    m = _re.search(r"(?m)^1[.\)]\s+[A-Z]", text)
+    if m:
+        text = text[m.start():]
 
-    # Remove markdown heading symbols
-    text = re.sub(r"^#{1,6}\s*", "", text, flags=re.MULTILINE)
+    # Remove markdown headings
+    text = _re.sub(r"(?m)^#{1,6}\s*", "", text)
 
-    # Remove bold/italic markers
-    text = re.sub(r"\*{1,3}(.+?)\*{1,3}", r"\1", text)
+    # Remove bold/italic
+    text = _re.sub(r"\*{2}(.+?)\*{2}", r"\1", text, flags=_re.DOTALL)
+    text = _re.sub(r"\*(.+?)\*",       r"\1", text)
 
-    # Fix common non-ASCII currency placeholders (■, □, ?)
-    # Replace ■ or □ followed by number with the word currency
-    text = re.sub(r"[■□�](\d)", r"\1", text)
+    # Convert bullet/dash list lines into prose sentences
+    def _debullet(m):
+        line = m.group(1).strip()
+        # Preserve section headings like "1. BUSINESS OVERVIEW"
+        if _re.match(r"^\d+[.\)]\s+[A-Z]{3}", line):
+            return line
+        if line and line[-1] not in ".!?:":
+            line = line[0].upper() + line[1:] + "."
+        else:
+            line = line[0].upper() + line[1:]
+        return line + " "
 
-    # Clean up excessive blank lines
-    text = re.sub(r"\n{3,}", "\n\n", text)
+    text = _re.sub(r"(?m)^[ \t]*[-\*\u2022\u2013]\s+(.+)$", _debullet, text)
+
+    # Fix currency placeholder squares (■ □ \ufffd before digits)
+    text = _re.sub(r"[\u25a0\u25a1\ufffd](\d)", r"\1", text)
+
+    # Collapse 3+ blank lines to 2
+    text = _re.sub(r"\n{3,}", "\n\n", text)
 
     return text.strip()
-
 def build_report_pdf(company, ticker, report_text, transcripts, chart_figs=None):
     """
     Build a professional research report PDF.
@@ -888,9 +903,11 @@ def make_bar(x, y, title, height=280, color=C_ACCENT):
         height=height,
         title=dict(text=title, font=dict(size=11, color=C_TEXT2, weight=500), x=0, xanchor="left"),
         bargap=0.35,
+        xaxis=dict(showgrid=False, showline=True, linecolor=C_BORDER,
+                   tickfont=dict(size=10, color=C_TEXT3), zeroline=False),
         yaxis=dict(showgrid=True, gridcolor=C_BORDER2, gridwidth=1,
-                   zeroline=False, showline=False,
-                   tickfont=dict(size=10, color=C_TEXT3), tickcolor="rgba(0,0,0,0)"),
+                   showline=True, linecolor=C_BORDER,
+                   zeroline=False, tickfont=dict(size=10, color=C_TEXT3)),
     )
     return fig
 
@@ -911,9 +928,11 @@ def make_line(x, ys, names, title, height=300, suffix=""):
         height=height,
         title=dict(text=title, font=dict(size=11, color=C_TEXT2, weight=500), x=0, xanchor="left"),
         margin=dict(l=0, r=0, t=52, b=0),
+        xaxis=dict(showgrid=False, showline=True, linecolor=C_BORDER,
+                   tickfont=dict(size=10, color=C_TEXT3), zeroline=False),
         yaxis=dict(showgrid=True, gridcolor=C_BORDER2, gridwidth=1,
-                   zeroline=False, showline=False,
-                   tickfont=dict(size=10, color=C_TEXT3), tickcolor="rgba(0,0,0,0)"),
+                   showline=True, linecolor=C_BORDER,
+                   zeroline=False, tickfont=dict(size=10, color=C_TEXT3)),
     )
     return fig
 
