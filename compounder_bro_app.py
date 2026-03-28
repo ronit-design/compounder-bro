@@ -650,10 +650,25 @@ def generate_report_nvidia(company_name, ticker, financials_text, transcripts, f
                 "max_tokens": 16000,
                 "messages": [{"role": "user", "content": prompt}],
             },
-            timeout=240,
+            timeout=300,
         )
         r.raise_for_status()
-        return _clean_report(r.json()["choices"][0]["message"]["content"])
+        data = r.json()
+        # Extract text robustly — handle varying response shapes
+        text = None
+        try:
+            text = data["choices"][0]["message"]["content"]
+        except (KeyError, IndexError, TypeError):
+            pass
+        if not text:
+            # Try alternative paths
+            text = (data.get("content") or
+                    data.get("text") or
+                    data.get("choices", [{}])[0].get("text") or
+                    str(data))
+        if not text or len(str(text)) < 50:
+            return f"NVIDIA returned an empty response. Raw: {str(data)[:500]}"
+        return _clean_report(str(text))
     except Exception as e:
         return f"Error generating report via NVIDIA: {e}"
 
