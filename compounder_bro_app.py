@@ -641,37 +641,79 @@ Remember: every assertion must be backed by evidence. Every number must have a s
 
 
 def generate_report_nvidia(company_name, ticker, financials_text, transcripts, filing_text, form_type, filing_date):
-    """Use NVIDIA Nemotron when a 10-K or 20-F is available."""
+    """
+    Use NVIDIA Nemotron with multi-turn continuation.
+    Chains up to 4 API calls — each time the model stops early we ask it to
+    continue, accumulating the full report before cleaning and returning it.
+    """
     transcript_text = _format_transcripts(transcripts)
     filing_section  = f"\n\n=== {form_type} FILING ({filing_date}) ===\n{filing_text[:60000]}" if filing_text else ""
     source_note = f"I have provided the full {form_type} filing ({filing_date}), financial statements, and earnings transcripts."
-
     prompt = _build_prompt(company_name, ticker, financials_text,
                            transcript_text, filing_section, source_note)
+
+    api_key = st.secrets.get("NVIDIA_API_KEY", "")
+    hdrs = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
+    base_payload = {
+        "model": "nvidia/llama-3.1-nemotron-ultra-253b-v1",
+        "max_tokens": 32000,
+        "temperature": 0.6,
+        "top_p": 0.95,
+    }
+
     try:
-        api_key = st.secrets.get("NVIDIA_API_KEY", "")
-        r = requests.post(
-            "https://integrate.api.nvidia.com/v1/chat/completions",
-            headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
-            json={
-                "model": "nvidia/llama-3.1-nemotron-ultra-253b-v1",
-                "max_tokens": 32000,
-                "temperature": 0.6,
-                "top_p": 0.95,
-                "messages": [{"role": "user", "content": prompt}],
-            },
-            timeout=300,
-        )
-        r.raise_for_status()
-        data = r.json()
-        # Extract text — NVIDIA Nemotron returns output in reasoning_content, not content
-        msg  = data["choices"][0]["message"]
-        text = (msg.get("content") or
-                msg.get("reasoning_content") or
-                msg.get("text") or "")
-        if not text or len(str(text)) < 50:
-            return f"NVIDIA returned an empty response. Raw: {str(data)[:500]}"
-        return _clean_report(str(text))
+        messages = [{"role": "user", "content": prompt}]
+        full_text = ""
+        max_turns = 4  # up to 4 × 32k = ~128k tokens of output
+
+        for turn in range(max_turns):
+            r = requests.post(
+                "https://integrate.api.nvidia.com/v1/chat/completions",
+                headers=hdrs,
+                json={**base_payload, "messages": messages},
+                timeout=300,
+            )
+            r.raise_for_status()
+            data  = r.json()
+            msg   = data["choices"][0]["message"]
+            chunk = (msg.get("content") or
+                     msg.get("reasoning_content") or
+                     msg.get("text") or "")
+            chunk = str(chunk).strip()
+
+            if not chunk:
+                break
+
+            full_text += ("\n\n" if full_text else "") + chunk
+
+            finish = data["choices"][0].get("finish_reason", "stop")
+
+            # If stopped naturally and all 7 sections are present, we're done
+            sections_present = sum(
+                1 for h in ["THE FOUNDATION", "THE BATTLEFIELD", "THE GENERALS",
+                            "THE CHOKEPOINTS", "THE SCORECARD", "ASYMMETRIC",
+                            "CATALYSTS"]
+                if h in full_text
+            )
+            if finish == "stop" and sections_present >= 7:
+                break
+
+            # Model stopped early — push the conversation forward and ask to continue
+            messages.append({"role": "assistant", "content": chunk})
+            messages.append({
+                "role": "user",
+                "content": (
+                    "Continue the report exactly where you left off. "
+                    "Do not repeat anything already written. "
+                    "Do not add any preamble — pick up mid-sentence if needed and keep going."
+                )
+            })
+
+        if not full_text or len(full_text) < 100:
+            return f"NVIDIA returned an empty response."
+
+        return _clean_report(full_text)
+
     except Exception as e:
         return f"Error generating report via NVIDIA: {e}"
 
