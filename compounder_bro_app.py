@@ -726,18 +726,25 @@ NOW WRITE ONLY THE FOLLOWING SECTION:
 
             text = text.strip()
 
-            # The model often restates the heading it was given — strip any leading
-            # heading lines so we control exactly one heading per section
-            # Remove lines that look like a section heading at the very start
+            # Strip ALL occurrences of the heading from the model output
+            # (model sometimes repeats it mid-text too)
+            # 1. Remove exact heading match anywhere in text
+            escaped = _re_assemble.escape(heading)
+            text = _re_assemble.sub(escaped, "", text)
+
+            # 2. Remove any generic numbered heading lines at the start
             lines = text.split("\n")
-            while lines and _re_assemble.match(r"^\d+[.\)\s]", lines[0].strip()):
+            while lines and _re_assemble.match(r"^\s*\d+[.\)]\s+", lines[0]):
                 lines.pop(0)
-            # Also strip any blank lines left at top after heading removal
+            # 3. Strip leading blank lines
             while lines and not lines[0].strip():
                 lines.pop(0)
             body = "\n".join(lines).strip()
 
-            # Re-attach the canonical heading we control
+            if not body:
+                continue
+
+            # Re-attach the single canonical heading we control
             section_text = f"{heading}\n\n{body}"
             report_parts.append(section_text)
 
@@ -848,11 +855,7 @@ def _clean_report(text):
     """Strip preamble, markdown, bullet points, and fix currency rendering."""
     import re as _re
 
-    # Strip anything before the first section heading
-    # Matches "1. THE FOUNDATION..." or "1. BUSINESS..." etc.
-    m = _re.search(r"(?m)^1[.\)]\s+(?:THE\s+)?[A-Z]", text)
-    if m:
-        text = text[m.start():]
+    # No preamble strip needed — section assembly guarantees correct heading order
 
     # Remove markdown headings
     text = _re.sub(r"(?m)^#{1,6}\s*", "", text)
