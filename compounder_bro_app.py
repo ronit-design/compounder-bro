@@ -590,44 +590,46 @@ def fetch_10k_text(ticker):
 def _build_prompt(company_name, ticker, financials_text, transcript_text,
                   extra_context="", source_note=""):
     """Shared prompt template used by both NVIDIA and Haiku paths."""
-    return f"""Act as a senior equity analyst at Berkshire Hathaway. Conduct a comprehensive, fundamental deep-dive into {company_name} ({ticker}).
+    return f"""You are a seasoned portfolio manager at a long-only, concentrated equity fund. You have spent your career studying exceptional businesses and you have a sharp eye for separating durable competitive advantages from temporary tailwinds. Your fund holds positions for five to ten years minimum and your partners expect you to present rigorous, evidence-based investment ideas that can withstand hard scrutiny. You are writing a deep-dive research note on {company_name} ({ticker}) for your investment committee.
 
 {source_note}
 
-CRITICAL INSTRUCTIONS:
-* Zero tolerance for hallucination on financial figures — every number must come from the provided data.
-* Source every financial claim inline e.g. (FY2024 Income Statement), (FY2024 Balance Sheet), (FY2024 Cash Flow).
-* Every time you use information from an earnings call transcript, attribute it explicitly inline e.g. (Q3 2024 Earnings Call). Never use transcript material without identifying which call it came from.
-* All currency figures: state the currency clearly e.g. "INR 1.47B", "EUR 2.1B" — no bare symbols.
+Your job is not to summarise — it is to form a point of view and back it up relentlessly with facts, numbers, and logic. Every claim must be evidenced. Every assertion must be tested against the data. Where you find something impressive, say why it is impressive and prove it. Where you find a weakness, call it out clearly and quantify it. Do not hedge everything. Take positions.
 
-FORMATTING RULES — NON-NEGOTIABLE:
-* Write in continuous flowing paragraphs only. No bullet points, dashes, numbered lists, or any list formatting anywhere.
-* Begin the report directly with the first section heading. No preamble or meta-commentary.
-* Section headings must be written EXACTLY as: "1. BUSINESS OVERVIEW & UNIT ECONOMICS" on its own line. No markdown symbols (#, **, *) anywhere.
-* Each section must contain 3-4 fully developed paragraphs of at least 4 sentences each. Group related sentences into one paragraph — do not write one sentence per line.
-* Every paragraph must be complete: context, evidence, and conclusion. No half-finished thoughts or orphaned single sentences.
+SOURCING RULES:
+Every financial figure must be sourced inline immediately after the number, e.g. (FY2024 Income Statement), (FY2024 Balance Sheet), (FY2024 Cash Flow Statement). Every piece of management commentary or forward guidance must cite the specific earnings call it came from, e.g. (Q2 2024 Earnings Call). Every fact sourced from the SEC filing must note the form and year, e.g. (10-K 2024, Business Section) or (20-F 2024, MD&A). Do not state a number without a source. Do not attribute a quote without naming the call it came from.
 
-DATA PROVIDED:
+CURRENCY: State the reporting currency explicitly for every figure. Write "USD 4.2B" or "EUR 890M" or "INR 1.47T" — never use bare currency symbols.
+
+FORMATTING — ABSOLUTE RULES:
+Write exclusively in continuous, flowing prose. There must be no bullet points, no dashes used as list markers, no numbered sub-lists, and no tables anywhere in the body of the report. Every section must read like a chapter in a serious investment book — dense, analytical paragraphs that build a sustained argument. Do not write one sentence per line. Do not create orphaned single-sentence paragraphs. Every paragraph must be at minimum five sentences long and must contain a point, evidence for that point drawn from the data, analysis of what that evidence means, and a conclusion. Begin the report immediately with the first section heading — no preamble, no meta-commentary, no statement of what you are about to do. Section headings must appear exactly as written below, on their own line, with no markdown formatting characters.
+
+DATA PROVIDED TO YOU:
 {financials_text}{transcript_text}{extra_context}
 
-REPORT STRUCTURE:
+REPORT SECTIONS — write each section as directed:
 
 1. BUSINESS OVERVIEW & UNIT ECONOMICS
-Write 3-4 paragraphs: what the company does, how they make money, key products/services, customer base, geographies, and unit economics with margin structure explained in plain English.
+
+Open with a crisp explanation of what this business actually does in economic terms — not a corporate description but a clear articulation of the value exchange: what problem does it solve, who pays for it, and why. Then spend the bulk of this section breaking down the unit economics in granular detail. What does the company earn on a single transaction, contract, or customer relationship? Walk through the revenue line, the cost of delivering that revenue, and the resulting gross profit in real numbers from the financial statements. Trace how gross profit converts down to operating profit and then to free cash flow, identifying where value is created and where it leaks. Explain the margin structure — is the business high-gross-margin-low-operating-margin, or does it have genuine operating leverage? How have margins trended over the last five to ten years and what does that trend tell you about the underlying business model? This section should be long — at minimum five substantial paragraphs — because understanding the economics precisely is the foundation of everything that follows.
 
 2. COMPETITIVE PROFILE & THE MOAT
-Write 3-4 paragraphs: industry structure, key competitors, durable competitive advantage with evidence of whether the moat is holding or eroding.
 
-3. CUSTOMER PREFERENCES & SUPPLY CHAIN
-Write 2-3 paragraphs: why customers choose this business, whether preferences are shifting, supply chain dynamics, and where pricing power sits.
+Describe the industry structure with precision: how many meaningful competitors exist, what the market share distribution looks like, and whether the industry is consolidating or fragmenting. Then make a direct judgement on whether this company has a durable competitive advantage and, critically, what the source of that advantage is. A moat must have a mechanism — cost advantage, switching costs, network effects, intangible assets, or efficient scale — and you must identify it specifically and explain exactly how it works in this business. Then test whether the moat is holding. Look at gross margin trends, pricing power in recent years, customer retention patterns from the transcripts, and competitive wins or losses disclosed in the filings. A moat that is eroding is more dangerous than no moat at all because it creates false confidence. Be honest about what you see in the data. Conclude with a clear view on the quality and durability of the competitive position.
 
-4. FINANCIAL HEALTH & CAPITAL ALLOCATION
-Write 3-4 paragraphs: leverage and interest coverage, working capital efficiency, and a full Owner's Earnings calculation — Net Income + D&A +/- Working Capital changes - Maintenance CapEx — showing each line with figure and source.
+3. CUSTOMER DYNAMICS & SUPPLY CHAIN
 
-5. GROWTH OUTLOOK & CATALYSTS
-Write 2-3 paragraphs: realistic long-term growth runway with evidence, and specific upcoming catalysts. Distinguish temporary tailwinds from permanent structural advantages.
+Analyse the customer base in depth: who the customers are, how concentrated the revenue is across them, whether there are long-term contracts or sticky repeat purchasing patterns, and what the cost to the customer of switching would be. Use specific figures from the financial statements and filing to support every claim — revenue concentration disclosures, contract lengths, renewal rates where available. Then examine the supply chain: who are the key suppliers, what is the degree of concentration, and where does pricing power sit in the value chain — with the company, its suppliers, or its customers? Identify any structural vulnerabilities in the supply chain that could impair margins or continuity. Draw on earnings call commentary to assess whether management is actively addressing these dynamics or appears complacent.
 
-Remember: You are a business owner evaluating a multi-decade investment. Write with conviction."""
+4. FINANCIAL STRENGTH & CAPITAL ALLOCATION QUALITY
+
+This section must be forensically detailed. Begin with the balance sheet: total assets, equity, net debt position, and debt maturity profile where disclosed. Calculate and discuss the interest coverage ratio using operating income against interest expense from the income statement. Then turn to working capital: walk through the cash conversion cycle using days sales outstanding, days payable outstanding, and inventory days where applicable, and explain what the cycle tells you about the quality of the business — a negative or very short cash conversion cycle is a sign of extraordinary business quality and must be noted. Then perform the Owner's Earnings calculation in full, showing every line: start with reported net income, add back depreciation and amortisation, adjust for changes in working capital, and subtract an estimate of maintenance capital expenditure. Show each number and its source. Compare owner's earnings to reported net income and explain any significant divergence. Finally, analyse how management has deployed capital historically — acquisitions, buybacks, dividends, organic reinvestment — and whether the returns on that deployed capital have been attractive. Use return on invested capital or return on equity trends over multiple years to form a view on management's capital allocation skill.
+
+5. GROWTH RUNWAY & KEY RISKS
+
+Lay out the realistic long-term growth opportunity with as much specificity as the data allows. What is the addressable market and what share does this company currently hold? What are the structural drivers that could expand either the market or the company's share within it? Anchor every growth claim in evidence — management guidance from earnings calls, disclosed pipeline, market size data from the filing, or observable revenue trends. Separate genuine structural growth from cyclical recovery or one-time tailwinds, and be explicit about which is which. Then turn to the key risks: not a laundry list, but the two or three factors that could permanently impair the long-term value of this business. For each risk, assess the probability of occurrence, the potential magnitude of damage to the business model, and whether management has disclosed any mitigating actions. Conclude with your overall view on whether the risk-reward balance is favourable for a long-term owner.
+
+Remember: your investment committee has read a lot of mediocre research. They will not be impressed by description. They will be impressed by insight — a non-obvious observation backed by hard evidence that changes how a thoughtful person would think about this business. Find those moments in the data and build your paragraphs around them."""
 
 
 def generate_report_nvidia(company_name, ticker, financials_text, transcripts, filing_text, form_type, filing_date):
@@ -645,7 +647,7 @@ def generate_report_nvidia(company_name, ticker, financials_text, transcripts, f
             headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
             json={
                 "model": "nvidia/llama-3.1-nemotron-ultra-253b-v1",
-                "max_tokens": 8000,
+                "max_tokens": 16000,
                 "messages": [{"role": "user", "content": prompt}],
             },
             timeout=240,
@@ -674,7 +676,7 @@ def generate_report_haiku(company_name, ticker, financials_text, transcripts):
         }
         payload = {
             "model": "claude-haiku-4-5-20251001",
-            "max_tokens": 8000,
+            "max_tokens": 16000,
             "tools": [{"type": "web_search_20250305", "name": "web_search"}],
             "messages": [{"role": "user", "content": prompt}],
         }
