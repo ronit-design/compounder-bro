@@ -434,80 +434,227 @@ def format_financials_for_prompt(inc, bs, cf, years):
 
     return "\n".join(lines)
 
-def generate_research_report(company_name, ticker, financials_text, transcripts):
+# ── EDGAR 10-K / 20-F fetcher ────────────────────────────────────────────────
+
+def edgar_get_cik(ticker):
+    """Look up a company's CIK from its ticker via EDGAR full-text search."""
+    try:
+        # EDGAR ticker → CIK mapping
+        r = requests.get(
+            "https://efts.sec.gov/LATEST/search-index?q=%22" + ticker + "%22&dateRange=custom&startdt=2020-01-01&forms=10-K,20-F",
+            headers={"User-Agent": "compounder-app research@example.com"},
+            timeout=10,
+        )
+        # Simpler: use the company tickers JSON
+        r2 = requests.get(
+            "https://www.sec.gov/files/company_tickers.json",
+            headers={"User-Agent": "compounder-app research@example.com"},
+            timeout=10,
+        )
+        r2.raise_for_status()
+        tickers_data = r2.json()
+        ticker_upper = ticker.upper().replace(".TO", "").replace(".NS", "").replace(".L", "")
+        for entry in tickers_data.values():
+            if entry.get("ticker", "").upper() == ticker_upper:
+                return str(entry["cik_str"]).zfill(10)
+        return None
+    except:
+        return None
+
+def edgar_latest_filing(cik, form_type):
+    """Find the most recent 10-K or 20-F filing for a CIK."""
+    try:
+        url = f"https://data.sec.gov/submissions/CIK{cik}.json"
+        r = requests.get(url, headers={"User-Agent": "compounder-app research@example.com"}, timeout=10)
+        r.raise_for_status()
+        data  = r.json()
+        filings = data.get("filings", {}).get("recent", {})
+        forms   = filings.get("form", [])
+        accnums = filings.get("accessionNumber", [])
+        dates   = filings.get("filingDate", [])
+        # Find most recent matching form
+        for i, form in enumerate(forms):
+            if form in (form_type, form_type + "/A"):
+                return accnums[i].replace("-", ""), dates[i]
+        return None, None
+    except:
+        return None, None
+
+def edgar_fetch_filing_text(cik, accession, max_chars=80000):
     """
-    Call Claude API with web_search tool enabled so it can research
-    the company itself before writing the report.
+    Fetch the actual filing text from EDGAR.
+    Returns extracted text from Business, Risk Factors, and MD&A sections.
     """
-    transcript_text = ""
-    if transcripts:
-        transcript_text = "\n\n=== EARNINGS CALL TRANSCRIPTS (last 4 quarters) ==="
-        for t in transcripts:
-            transcript_text += f"\n\nQ{t['quarter']} {t['year']} Transcript (excerpt):\n{t['text'][:4000]}"
-    else:
-        transcript_text = "\n\n=== EARNINGS CALL TRANSCRIPTS ===\nNo transcripts available."
+    try:
+        # Get filing index
+        acc_fmt = f"{accession[:10]}/{accession[10:12]}/{accession[12:]}"
+        index_url = f"https://www.sec.gov/Archives/edgar/data/{int(cik)}/{accession}/{accession}-index.htm"
+        r = requests.get(index_url, headers={"User-Agent": "compounder-app research@example.com"}, timeout=10)
 
-    prompt = f"""Act as a senior equity analyst at Berkshire Hathaway. I need you to conduct a comprehensive, fundamental deep-dive into {company_name} ({ticker}).
+        if not r.ok:
+            # Try index.json instead
+            index_url2 = f"https://data.sec.gov/submissions/CIK{cik}/filings/{accession}.json"
+            # Fall back to direct document listing
+            idx_url = f"https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&CIK={int(cik)}&type=10-K&dateb=&owner=include&count=1&search_text=&output=atom"
 
-You have access to a web search tool. USE IT EXTENSIVELY before writing anything. Specifically you must search for:
-1. What does {company_name} ({ticker}) actually do — business model, products, services, customers
-2. Recent news, earnings results, and management commentary for {company_name}
-3. The competitive landscape and industry structure {company_name} operates in
-4. Any recent strategic developments, acquisitions, or threats
+        # Parse the index to find the primary document
+        import re as _re
+        links = _re.findall(r'href="(/Archives/edgar/data/[^"]+\.htm)"', r.text, _re.IGNORECASE)
+        # Pick the largest .htm file (likely the full filing)
+        doc_url = None
+        for link in links:
+            if accession.replace("-", "") in link.replace("/", "").replace("-", ""):
+                doc_url = "https://www.sec.gov" + link
+                break
+        if not doc_url and links:
+            doc_url = "https://www.sec.gov" + links[0]
 
-Only after completing your web research should you write the report.
+        if not doc_url:
+            return None
 
-I am also providing financial statements and earnings transcripts below.
+        doc_r = requests.get(doc_url, headers={"User-Agent": "compounder-app research@example.com"}, timeout=30)
+        raw_html = doc_r.text
+
+        # Strip HTML tags
+        text = _re.sub(r"<[^>]+>", " ", raw_html)
+        text = _re.sub(r"&nbsp;", " ", text)
+        text = _re.sub(r"&amp;", "&", text)
+        text = _re.sub(r"\s{3,}", "\n\n", text)
+        text = text.strip()
+
+        # Extract key sections: Item 1 (Business), Item 1A (Risk Factors), Item 7 (MD&A)
+        sections = {}
+        # Extract Business (Item 1) and MD&A (Item 7) only — faster and cheaper
+        patterns = [
+            ("BUSINESS", r"(?i)item\s+1[.\s]+business\b", r"(?i)item\s+1a[.\s]"),
+            ("MD&A",     r"(?i)item\s+7[.\s]+management.{0,50}discussion", r"(?i)item\s+7a[.\s]"),
+        ]
+        for name, start_pat, end_pat in patterns:
+            m_start = _re.search(start_pat, text)
+            m_end   = _re.search(end_pat, text[m_start.end():]) if m_start else None
+            if m_start:
+                snippet_start = m_start.start()
+                snippet_end   = m_start.end() + m_end.start() if m_end else m_start.start() + 25000
+                sections[name] = text[snippet_start:snippet_end][:25000]
+
+        if sections:
+            combined = ""
+            for name, txt in sections.items():
+                combined += f"\n\n=== {name} ===\n{txt}"
+            return combined[:max_chars]
+
+        # Fallback: return middle portion of doc (skip boilerplate at start/end)
+        return text[5000:5000 + max_chars]
+
+    except Exception as e:
+        return None
+
+def fetch_10k_text(ticker):
+    """
+    Main entry point. Returns (filing_text, form_type, filing_date) or (None, None, None).
+    Tries 10-K first, then 20-F.
+    """
+    cik = edgar_get_cik(ticker)
+    if not cik:
+        return None, None, None
+
+    for form in ("10-K", "20-F"):
+        accession, date = edgar_latest_filing(cik, form)
+        if accession:
+            text = edgar_fetch_filing_text(cik, accession)
+            if text and len(text) > 1000:
+                return text, form, date
+
+    return None, None, None
+
+
+# ── Report generation — dual model path ──────────────────────────────────────
+
+def _build_prompt(company_name, ticker, financials_text, transcript_text,
+                  extra_context="", source_note=""):
+    """Shared prompt template used by both NVIDIA and Haiku paths."""
+    return f"""Act as a senior equity analyst at Berkshire Hathaway. Conduct a comprehensive, fundamental deep-dive into {company_name} ({ticker}).
+
+{source_note}
 
 CRITICAL INSTRUCTIONS:
-* Use web search first to understand the business — do not write [REDACTED] for basic business facts you can find online
-* Zero Tolerance for Hallucination on financial figures — every number must come from the provided financial data
-* Source financial claims: [IS 2024], [BS 2024], [CF 2024], [Q4 2024 Call]
-* For qualitative facts from web research, cite the source URL or publication
-
-FINANCIAL DATA PROVIDED:
-{financials_text}{transcript_text}
+* Zero tolerance for hallucination on financial figures — every number must come from the provided data.
+* Source every financial claim inline e.g. (FY2024 Income Statement), (FY2024 Balance Sheet), (FY2024 Cash Flow).
+* Every time you use information from an earnings call transcript, attribute it explicitly inline e.g. (Q3 2024 Earnings Call). Never use transcript material without identifying which call it came from.
+* All currency figures: state the currency clearly e.g. "INR 1.47B", "EUR 2.1B" — no bare symbols.
 
 FORMATTING RULES — NON-NEGOTIABLE:
-* Every single section must be written as continuous flowing paragraphs. Absolutely no bullet points, dashes, numbered lists, or any list formatting of any kind, anywhere in the document.
-* Do not include any preamble, meta-commentary, or statements about what you are about to do. Begin the report directly with the first section heading.
-* Section headings must be written EXACTLY as: "1. BUSINESS OVERVIEW & UNIT ECONOMICS" on its own line, nothing else on that line. No markdown symbols (#, ##, **, *) anywhere.
-* Write each section as 3-5 substantial paragraphs of continuous prose. Each paragraph should be at least 4 sentences long.
-* If you find yourself wanting to use a bullet point or dash to list items, rewrite it as a sentence instead. For example, instead of "- Revenue grew 10%" write "Revenue grew 10% during the period."
-* Every paragraph must be fully developed — a minimum of 4 complete sentences that build on each other. No orphaned single-sentence paragraphs. No half-finished thoughts. No trailing incomplete observations. If a point is worth making, it must be made fully with context, evidence, and conclusion.
-* CRITICAL PARAGRAPH STRUCTURE: Do not write a sentence and then press enter. Group related sentences together into one continuous paragraph separated by a single blank line. A paragraph about the O2C segment should contain everything about the O2C segment — do not split it across multiple short blocks. Think of each section as containing 3 large paragraphs, not 10 tiny ones.
-* When citing financial sources write inline e.g. (FY2024 Income Statement) not [IS 2024].
-* Every time you use information drawn from an earnings call transcript, you must explicitly attribute it inline to the specific call, e.g. "(Q3 2024 Earnings Call)" or "(Q1 2025 Earnings Call)". This applies to all management commentary, forward guidance, strategic statements, and any qualitative colour taken from transcripts. Never use transcript material without identifying which call it came from.
-* All currency figures: state the currency clearly e.g. "INR 1.47B" not symbols.
+* Write in continuous flowing paragraphs only. No bullet points, dashes, numbered lists, or any list formatting anywhere.
+* Begin the report directly with the first section heading. No preamble or meta-commentary.
+* Section headings must be written EXACTLY as: "1. BUSINESS OVERVIEW & UNIT ECONOMICS" on its own line. No markdown symbols (#, **, *) anywhere.
+* Each section must contain 3-4 fully developed paragraphs of at least 4 sentences each. Group related sentences into one paragraph — do not write one sentence per line.
+* Every paragraph must be complete: context, evidence, and conclusion. No half-finished thoughts or orphaned single sentences.
+
+DATA PROVIDED:
+{financials_text}{transcript_text}{extra_context}
 
 REPORT STRUCTURE:
 
 1. BUSINESS OVERVIEW & UNIT ECONOMICS
-Write 3-4 paragraphs covering: what the company does, how exactly they make money, their key products and services, the customer base, geographies, and unit economics. Explain the margin structure in plain English.
+Write 3-4 paragraphs: what the company does, how they make money, key products/services, customer base, geographies, and unit economics with margin structure explained in plain English.
 
 2. COMPETITIVE PROFILE & THE MOAT
-Write 3-4 paragraphs covering: the industry structure, who the key competitors are, what durable competitive advantage (if any) the company possesses, and cite specific evidence of whether the moat is holding or eroding from the financial and web data.
+Write 3-4 paragraphs: industry structure, key competitors, durable competitive advantage with evidence of whether the moat is holding or eroding.
 
 3. CUSTOMER PREFERENCES & SUPPLY CHAIN
-Write 2-3 paragraphs covering: why customers choose this business, whether preferences are shifting, the supply chain structure, and where pricing power sits.
+Write 2-3 paragraphs: why customers choose this business, whether preferences are shifting, supply chain dynamics, and where pricing power sits.
 
 4. FINANCIAL HEALTH & CAPITAL ALLOCATION
-Write 3-4 paragraphs covering: leverage and interest coverage, working capital efficiency, and a full Owner's Earnings calculation walking through the arithmetic explicitly: Net Income + D&A +/- Working Capital changes - Maintenance CapEx. Show each line with the figure and source.
+Write 3-4 paragraphs: leverage and interest coverage, working capital efficiency, and a full Owner's Earnings calculation — Net Income + D&A +/- Working Capital changes - Maintenance CapEx — showing each line with figure and source.
 
 5. GROWTH OUTLOOK & CATALYSTS
-Write 2-3 paragraphs covering: the realistic long-term growth runway supported by evidence, and specific upcoming catalysts. Be explicit about which are temporary tailwinds versus permanent structural advantages.
+Write 2-3 paragraphs: realistic long-term growth runway with evidence, and specific upcoming catalysts. Distinguish temporary tailwinds from permanent structural advantages.
 
-Remember: You are a business owner evaluating a multi-decade investment. Search the web thoroughly, then write with conviction."""
+Remember: You are a business owner evaluating a multi-decade investment. Write with conviction."""
 
-    api_key = st.secrets.get("ANTHROPIC_API_KEY", "")
-    headers = {
-        "Content-Type": "application/json",
-        "x-api-key": api_key,
-        "anthropic-version": "2023-06-01",
-    }
 
-    # First call — with web search tool enabled
+def generate_report_nvidia(company_name, ticker, financials_text, transcripts, filing_text, form_type, filing_date):
+    """Use NVIDIA Nemotron when a 10-K or 20-F is available."""
+    transcript_text = _format_transcripts(transcripts)
+    filing_section  = f"\n\n=== {form_type} FILING ({filing_date}) ===\n{filing_text[:60000]}" if filing_text else ""
+    source_note = f"I have provided the full {form_type} filing ({filing_date}), financial statements, and earnings transcripts."
+
+    prompt = _build_prompt(company_name, ticker, financials_text,
+                           transcript_text, filing_section, source_note)
     try:
+        api_key = st.secrets.get("NVIDIA_API_KEY", "")
+        r = requests.post(
+            "https://integrate.api.nvidia.com/v1/chat/completions",
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
+            json={
+                "model": "nvidia/llama-3.1-nemotron-ultra-253b-v1",
+                "max_tokens": 8000,
+                "messages": [{"role": "user", "content": prompt}],
+            },
+            timeout=240,
+        )
+        r.raise_for_status()
+        return _clean_report(r.json()["choices"][0]["message"]["content"])
+    except Exception as e:
+        return f"Error generating report via NVIDIA: {e}"
+
+
+def generate_report_haiku(company_name, ticker, financials_text, transcripts):
+    """Use Claude Haiku with web_search tool when no SEC filing is available."""
+    transcript_text = _format_transcripts(transcripts)
+    source_note = ("No SEC filing is available for this company. "
+                   "Use the web_search tool extensively to research the business model, "
+                   "competitive position, and recent developments before writing.")
+
+    prompt = _build_prompt(company_name, ticker, financials_text,
+                           transcript_text, "", source_note)
+    try:
+        api_key = st.secrets.get("ANTHROPIC_API_KEY", "")
+        headers = {
+            "Content-Type": "application/json",
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+        }
         payload = {
             "model": "claude-haiku-4-5-20251001",
             "max_tokens": 8000,
@@ -519,33 +666,19 @@ Remember: You are a business owner evaluating a multi-decade investment. Search 
         r.raise_for_status()
         data = r.json()
 
-        # Handle tool use loop — keep going until Claude stops using tools
+        # Tool use loop
         messages = [{"role": "user", "content": prompt}]
-        max_rounds = 8
-
-        for _ in range(max_rounds):
+        for _ in range(8):
             messages.append({"role": "assistant", "content": data["content"]})
-
-            # Check if done
             if data.get("stop_reason") == "end_turn":
                 break
-
-            # Collect any tool results needed
-            tool_results = []
-            for block in data["content"]:
-                if block.get("type") == "tool_use":
-                    # web_search results come back automatically in next turn
-                    tool_results.append({
-                        "type": "tool_result",
-                        "tool_use_id": block["id"],
-                        "content": "Search completed."
-                    })
-
+            tool_results = [
+                {"type": "tool_result", "tool_use_id": b["id"], "content": "Search completed."}
+                for b in data["content"] if b.get("type") == "tool_use"
+            ]
             if not tool_results:
                 break
-
             messages.append({"role": "user", "content": tool_results})
-
             r2 = requests.post("https://api.anthropic.com/v1/messages",
                                headers=headers,
                                json={**payload, "messages": messages},
@@ -553,13 +686,49 @@ Remember: You are a business owner evaluating a multi-decade investment. Search 
             r2.raise_for_status()
             data = r2.json()
 
-        # Extract all text from final response
         text_parts = [b["text"] for b in data["content"] if b.get("type") == "text"]
-        raw = "\n\n".join(text_parts) if text_parts else "No report generated."
-        return _clean_report(raw)
-
+        return _clean_report("\n\n".join(text_parts))
     except Exception as e:
-        return f"Error generating report: {e}"
+        return f"Error generating report via Haiku: {e}"
+
+
+def _format_transcripts(transcripts):
+    if transcripts:
+        txt = "\n\n=== EARNINGS CALL TRANSCRIPTS (last 4 quarters) ==="
+        for t in transcripts:
+            txt += f"\n\nQ{t['quarter']} {t['year']} Earnings Call (excerpt):\n{t['text'][:4000]}"
+        return txt
+    return "\n\n=== EARNINGS CALL TRANSCRIPTS ===\nNo transcripts available."
+
+
+def generate_research_report(company_name, ticker, financials_text, transcripts, web_context=""):
+    """
+    Routing logic:
+    - Ticker with exchange suffix (e.g. CSU.TO, RELIANCE.NS, AZN.L) → non-US listed
+      → skip EDGAR entirely, use Haiku with web search
+    - No suffix → US-listed, try EDGAR for 10-K or 20-F
+      → Found: use NVIDIA with filing text
+      → Not found: fall back to Haiku with web search
+    """
+    import re as _re
+
+    # Detect exchange suffix: any ticker containing a dot followed by 1-4 letters at the end
+    has_suffix = bool(_re.search(r"[.][A-Z]{1,4}$", ticker.upper()))
+
+    if has_suffix:
+        # Non-US stock — go straight to Haiku
+        return generate_report_haiku(company_name, ticker, financials_text,
+                                     transcripts), "haiku", None
+
+    # US-listed — try EDGAR
+    filing_text, form_type, filing_date = fetch_10k_text(ticker)
+    if filing_text:
+        return generate_report_nvidia(company_name, ticker, financials_text,
+                                      transcripts, filing_text, form_type, filing_date), "nvidia", form_type
+
+    # EDGAR came up empty — fall back to Haiku
+    return generate_report_haiku(company_name, ticker, financials_text,
+                                 transcripts), "haiku", None
 
 
 def _clean_report(text):
@@ -1597,19 +1766,43 @@ else:
         generate_btn = st.button("Generate Report")
 
         if generate_btn:
+            import re as _re_tab
+            _has_suffix = bool(_re_tab.search(r"[.][A-Z]{1,4}$", ticker.upper()))
+
             with st.spinner("Fetching earnings transcripts..."):
                 transcripts = fetch_last_4_transcripts(ticker)
 
-            with st.spinner("Researching company and generating report (30–90 seconds)..."):
+            # Decide path and fetch filing once
+            if _has_suffix:
+                _filing_text, _form_preview, _date_preview = None, None, None
+                spin_msg = f"{ticker} is non-US listed — generating report with Haiku + web search..."
+            else:
+                with st.spinner("Searching EDGAR for 10-K / 20-F..."):
+                    _filing_text, _form_preview, _date_preview = fetch_10k_text(ticker)
+                if _filing_text:
+                    spin_msg = f"Found {_form_preview} ({_date_preview}) — generating report with NVIDIA..."
+                else:
+                    spin_msg = "No SEC filing found — generating report with Haiku + web search..."
+
+            with st.spinner(spin_msg):
                 financials_text = format_financials_for_prompt(inc, bs, cf, years)
-                report_text = generate_research_report(company, ticker, financials_text, transcripts)
+                # Pass pre-fetched filing directly to avoid double EDGAR call
+                if _filing_text:
+                    report_text = generate_report_nvidia(
+                        company, ticker, financials_text, transcripts,
+                        _filing_text, _form_preview, _date_preview)
+                    model_used, form_used = "nvidia", _form_preview
+                else:
+                    report_text = generate_report_haiku(
+                        company, ticker, financials_text, transcripts)
+                    model_used, form_used = "haiku", None
 
             # Show inline
             st.markdown("---")
             st.markdown(report_text)
             st.markdown("---")
 
-            # Build PDF — pass pre-generated charts (no extra tokens)
+            # Build PDF
             with st.spinner("Building PDF..."):
                 chart_figs = []
                 # Revenue chart
@@ -1637,10 +1830,18 @@ else:
                 mime="application/pdf",
             )
 
+            # Show provenance
+            meta_parts = []
+            if model_used == "nvidia" and form_used:
+                meta_parts.append(f"Model: NVIDIA Nemotron  ·  Filing: {form_used} ({_date_preview})")
+            else:
+                meta_parts.append("Model: Claude Haiku  ·  Source: web search + financial data")
             if transcripts:
                 labels = ", ".join([f"Q{t['quarter']} {t['year']}" for t in transcripts])
-                st.markdown(f'<div style="font-size:0.72rem;color:#999;margin-top:0.5rem">'
-                            f'Transcripts used: {labels}</div>', unsafe_allow_html=True)
+                meta_parts.append(f"Transcripts: {labels}")
+            st.markdown(
+                f'<div style="font-size:0.72rem;color:#999;margin-top:0.5rem">{" &nbsp;·&nbsp; ".join(meta_parts)}</div>',
+                unsafe_allow_html=True)
         else:
             st.markdown('<div style="color:#ccc;font-size:0.8rem">Click Generate Report to begin.</div>', unsafe_allow_html=True)
 
