@@ -475,7 +475,9 @@ FORMATTING RULES — NON-NEGOTIABLE:
 * Write each section as 3-5 substantial paragraphs of continuous prose. Each paragraph should be at least 4 sentences long.
 * If you find yourself wanting to use a bullet point or dash to list items, rewrite it as a sentence instead. For example, instead of "- Revenue grew 10%" write "Revenue grew 10% during the period."
 * Every paragraph must be fully developed — a minimum of 4 complete sentences that build on each other. No orphaned single-sentence paragraphs. No half-finished thoughts. No trailing incomplete observations. If a point is worth making, it must be made fully with context, evidence, and conclusion.
+* CRITICAL PARAGRAPH STRUCTURE: Do not write a sentence and then press enter. Group related sentences together into one continuous paragraph separated by a single blank line. A paragraph about the O2C segment should contain everything about the O2C segment — do not split it across multiple short blocks. Think of each section as containing 3 large paragraphs, not 10 tiny ones.
 * When citing financial sources write inline e.g. (FY2024 Income Statement) not [IS 2024].
+* Every time you use information drawn from an earnings call transcript, you must explicitly attribute it inline to the specific call, e.g. "(Q3 2024 Earnings Call)" or "(Q1 2025 Earnings Call)". This applies to all management commentary, forward guidance, strategic statements, and any qualitative colour taken from transcripts. Never use transcript material without identifying which call it came from.
 * All currency figures: state the currency clearly e.g. "INR 1.47B" not symbols.
 
 REPORT STRUCTURE:
@@ -596,6 +598,31 @@ def _clean_report(text):
     # Collapse 3+ blank lines to 2
     text = _re.sub(r"\n{3,}", "\n\n", text)
 
+    # Merge orphaned short paragraphs (< 120 chars, not a section heading)
+    # into the following paragraph so they form proper flowing prose
+    paras = text.split("\n\n")
+    merged = []
+    i = 0
+    while i < len(paras):
+        p = paras[i].strip()
+        # Section headings: keep alone
+        if _re.match(r"^\d+[.\)]\s+[A-Z]{3}", p):
+            merged.append(p)
+            i += 1
+        # Short orphan — merge forward
+        elif len(p) < 120 and i + 1 < len(paras) and not _re.match(r"^\d+[.\)]\s+[A-Z]{3}", paras[i+1].strip()):
+            combined = p.rstrip()
+            # Add space joiner — ensure sentence ends with punctuation
+            if combined and combined[-1] not in ".!?":
+                combined += "."
+            combined += " " + paras[i+1].strip()
+            paras[i+1] = combined
+            i += 1  # skip current, let next iteration pick up combined
+        else:
+            merged.append(p)
+            i += 1
+
+    text = "\n\n".join(merged)
     return text.strip()
 def build_report_pdf(company, ticker, report_text, transcripts, chart_figs=None):
     """
