@@ -468,31 +468,30 @@ CRITICAL INSTRUCTIONS:
 FINANCIAL DATA PROVIDED:
 {financials_text}{transcript_text}
 
-Structure your report into these sections:
+FORMATTING RULES — CRITICAL:
+* Write in flowing, professional prose as a senior analyst would. Do not use bullet points anywhere in the report.
+* Do not include any preamble, meta-commentary, or statements about what you are about to do. Begin the report directly with the first section heading.
+* Section headings must be written EXACTLY as: "1. BUSINESS OVERVIEW & UNIT ECONOMICS" on its own line, nothing else on that line. No markdown symbols (#, ##, **, *) anywhere.
+* Write each section as 3-5 substantive paragraphs of continuous prose.
+* When citing financial sources write inline e.g. (FY2024 Income Statement) not [IS 2024].
+* All currency figures: if the company reports in a non-USD currency, state the currency clearly e.g. "INR 1.47B" not symbols.
+
+REPORT STRUCTURE:
 
 1. BUSINESS OVERVIEW & UNIT ECONOMICS
-- What exactly does this company do? How do they make money?
-- Key products/services, customer segments, and geographies
-- Unit economics: revenue per unit/customer, margins, pricing power
+Write 3-4 paragraphs covering: what the company does, how exactly they make money, their key products and services, the customer base, geographies, and unit economics. Explain the margin structure in plain English.
 
 2. COMPETITIVE PROFILE & THE MOAT
-- Industry structure: consolidated or fragmented?
-- What is their durable competitive advantage?
-- Evidence of moat: historical margin resilience, market share data
+Write 3-4 paragraphs covering: the industry structure, who the key competitors are, what durable competitive advantage (if any) the company possesses, and cite specific evidence of whether the moat is holding or eroding from the financial and web data.
 
 3. CUSTOMER PREFERENCES & SUPPLY CHAIN
-- Why do customers choose this business over rivals?
-- Supply chain: who has the pricing power?
-- Any concentration risks or vulnerabilities
+Write 2-3 paragraphs covering: why customers choose this business, whether preferences are shifting, the supply chain structure, and where pricing power sits.
 
 4. FINANCIAL HEALTH & CAPITAL ALLOCATION
-- Debt analysis and interest coverage ratio [from financial data]
-- Working capital efficiency [from financial data]
-- Owner's Earnings: Net Income + D&A +/- WC changes - Maintenance CapEx [show your math]
+Write 3-4 paragraphs covering: leverage and interest coverage, working capital efficiency, and a full Owner's Earnings calculation walking through the arithmetic explicitly: Net Income + D&A +/- Working Capital changes - Maintenance CapEx. Show each line with the figure and source.
 
 5. GROWTH OUTLOOK & CATALYSTS
-- Realistic long-term growth runway
-- Specific upcoming catalysts: separate temporary tailwinds from structural advantages
+Write 2-3 paragraphs covering: the realistic long-term growth runway supported by evidence, and specific upcoming catalysts. Be explicit about which are temporary tailwinds versus permanent structural advantages.
 
 Remember: You are a business owner evaluating a multi-decade investment. Search the web thoroughly, then write with conviction."""
 
@@ -552,137 +551,207 @@ Remember: You are a business owner evaluating a multi-decade investment. Search 
 
         # Extract all text from final response
         text_parts = [b["text"] for b in data["content"] if b.get("type") == "text"]
-        return "\n\n".join(text_parts) if text_parts else "No report generated."
+        raw = "\n\n".join(text_parts) if text_parts else "No report generated."
+        return _clean_report(raw)
 
     except Exception as e:
         return f"Error generating report: {e}"
 
-def build_report_pdf(company, ticker, report_text, transcripts):
-    """Build a clean, professional PDF from the report text using reportlab."""
+
+def _clean_report(text):
+    """Strip preamble, markdown symbols, and fix currency rendering."""
+    import re
+
+    # Remove any preamble before the first numbered section heading
+    match = re.search(r"(?m)^1[\.\)]\s+[A-Z]", text)
+    if match:
+        text = text[match.start():]
+
+    # Remove markdown heading symbols
+    text = re.sub(r"^#{1,6}\s*", "", text, flags=re.MULTILINE)
+
+    # Remove bold/italic markers
+    text = re.sub(r"\*{1,3}(.+?)\*{1,3}", r"\1", text)
+
+    # Fix common non-ASCII currency placeholders (■, □, ?)
+    # Replace ■ or □ followed by number with the word currency
+    text = re.sub(r"[■□�](\d)", r"\1", text)
+
+    # Clean up excessive blank lines
+    text = re.sub(r"\n{3,}", "\n\n", text)
+
+    return text.strip()
+
+def build_report_pdf(company, ticker, report_text, transcripts, chart_figs=None):
+    """
+    Build a professional research report PDF.
+    chart_figs: list of (title, plotly Figure) tuples — rendered as images, no extra tokens.
+    """
     from reportlab.lib.pagesizes import A4
-    from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-    from reportlab.lib.units import cm
+    from reportlab.lib.styles import ParagraphStyle
+    from reportlab.lib.units import cm, mm
     from reportlab.lib import colors
     from reportlab.platypus import (
-        SimpleDocTemplate, Paragraph, Spacer, HRFlowable, KeepTogether
+        SimpleDocTemplate, Paragraph, Spacer, HRFlowable,
+        KeepTogether, Image as RLImage, PageBreak
     )
-    from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_JUSTIFY
+    from reportlab.lib.enums import TA_LEFT, TA_CENTER, TA_JUSTIFY, TA_RIGHT
+    import re, io
+    from datetime import datetime
 
     buf = io.BytesIO()
-    doc = SimpleDocTemplate(
-        buf, pagesize=A4,
-        leftMargin=2.2*cm, rightMargin=2.2*cm,
-        topMargin=2.5*cm, bottomMargin=2.5*cm,
-    )
+    W, H = A4
 
-    # Colours
-    BLACK  = colors.HexColor("#111111")
-    DARK   = colors.HexColor("#333333")
-    MID    = colors.HexColor("#555555")
-    LIGHT  = colors.HexColor("#999999")
-    RULE   = colors.HexColor("#E0E0E0")
+    # ── Colours ──────────────────────────────────────────────────────────────
+    INK      = colors.HexColor("#111111")
+    BODY_CLR = colors.HexColor("#2A2A2A")
+    MID      = colors.HexColor("#555555")
+    MUTED    = colors.HexColor("#888888")
+    RULE_CLR = colors.HexColor("#DDDDDD")
+    LIGHT_BG = colors.HexColor("#F7F7F7")
 
-    # Styles
-    cover_title = ParagraphStyle("cover_title",
-        fontName="Helvetica-Bold", fontSize=22, leading=28,
-        textColor=BLACK, spaceAfter=6, alignment=TA_LEFT)
-    cover_sub = ParagraphStyle("cover_sub",
-        fontName="Helvetica", fontSize=11, leading=15,
-        textColor=MID, spaceAfter=4, alignment=TA_LEFT)
-    cover_meta = ParagraphStyle("cover_meta",
-        fontName="Helvetica", fontSize=9, leading=12,
-        textColor=LIGHT, alignment=TA_LEFT)
-    disclaimer_style = ParagraphStyle("disc",
-        fontName="Helvetica-Oblique", fontSize=7.5, leading=10,
-        textColor=LIGHT, spaceAfter=16)
-    sec_heading = ParagraphStyle("sec_heading",
-        fontName="Helvetica-Bold", fontSize=12, leading=16,
-        textColor=BLACK, spaceBefore=14, spaceAfter=4, alignment=TA_LEFT)
-    body_style = ParagraphStyle("body",
-        fontName="Helvetica", fontSize=9.5, leading=14,
-        textColor=DARK, spaceBefore=0, spaceAfter=5,
-        alignment=TA_JUSTIFY)
-    bullet_style = ParagraphStyle("bullet",
-        fontName="Helvetica", fontSize=9.5, leading=14,
-        textColor=DARK, leftIndent=14, spaceBefore=1, spaceAfter=2)
-    redacted_style = ParagraphStyle("redacted",
-        fontName="Helvetica-Oblique", fontSize=9, leading=12,
-        textColor=LIGHT, spaceAfter=3)
-    footer_style = ParagraphStyle("footer",
-        fontName="Helvetica", fontSize=8, leading=10,
-        textColor=LIGHT, alignment=TA_CENTER)
+    # ── Styles ────────────────────────────────────────────────────────────────
+    def S(name, **kw):
+        defaults = dict(fontName="Helvetica", fontSize=10, leading=15,
+                        textColor=BODY_CLR, spaceBefore=0, spaceAfter=0,
+                        alignment=TA_LEFT)
+        defaults.update(kw)
+        return ParagraphStyle(name, **defaults)
+
+    s_cover_co   = S("cco",  fontName="Helvetica",      fontSize=10, textColor=MUTED, spaceAfter=2)
+    s_cover_name = S("cnm",  fontName="Helvetica-Bold",  fontSize=26, textColor=INK,
+                     leading=30, spaceAfter=6)
+    s_cover_sub  = S("csb",  fontName="Helvetica",      fontSize=12, textColor=MID,  spaceAfter=4)
+    s_cover_meta = S("cmt",  fontName="Helvetica",      fontSize=8.5, textColor=MUTED)
+    s_disc       = S("dsc",  fontName="Helvetica-Oblique", fontSize=7.5, textColor=MUTED,
+                     spaceAfter=12, leading=11)
+    s_sec        = S("sec",  fontName="Helvetica-Bold",  fontSize=11, textColor=INK,
+                     spaceBefore=20, spaceAfter=6, leading=14)
+    s_body       = S("bdy",  fontName="Helvetica",       fontSize=9.5, textColor=BODY_CLR,
+                     leading=15, spaceAfter=8, alignment=TA_JUSTIFY)
+    s_caption    = S("cap",  fontName="Helvetica-Oblique", fontSize=8, textColor=MUTED,
+                     spaceBefore=3, spaceAfter=10, alignment=TA_CENTER)
+    s_footer     = S("ftr",  fontName="Helvetica",       fontSize=7.5, textColor=MUTED,
+                     alignment=TA_CENTER)
+    s_source     = S("src",  fontName="Helvetica-Oblique", fontSize=8, textColor=MUTED,
+                     spaceAfter=14, leading=11)
 
     story = []
-    now = datetime.now().strftime("%d %B %Y")
+    now   = datetime.now().strftime("%d %B %Y")
+    lm    = 2.2*cm
+    rm    = 2.2*cm
+    usable_w = W - lm - rm
 
-    # Cover block
-    story.append(Spacer(1, 0.8*cm))
-    story.append(Paragraph(company, cover_title))
-    story.append(Paragraph(f"Equity Research Report  \u00b7  {ticker}", cover_sub))
-    tc = f"{len(transcripts)} transcript(s) used" if transcripts else "No transcripts"
-    story.append(Paragraph(f"Generated {now}  \u00b7  {tc}  \u00b7  Berkshire-style fundamental analysis", cover_meta))
-    story.append(Spacer(1, 0.3*cm))
-    story.append(HRFlowable(width="100%", thickness=1.5, color=BLACK, spaceAfter=14))
+    def hr(thick=0.5, color=RULE_CLR, before=4, after=8):
+        return HRFlowable(width="100%", thickness=thick, color=color,
+                          spaceBefore=before*mm, spaceAfter=after*mm)
+
+    # ── Cover ─────────────────────────────────────────────────────────────────
+    story.append(Spacer(1, 1.2*cm))
+    story.append(Paragraph("EQUITY RESEARCH", s_cover_co))
+    story.append(Paragraph(company, s_cover_name))
+    story.append(Paragraph(ticker, s_cover_sub))
+    story.append(Spacer(1, 0.4*cm))
+    story.append(hr(thick=1.5, color=INK, before=0, after=4))
+    tc = f"{len(transcripts)} earnings transcript(s)" if transcripts else "No transcripts available"
+    story.append(Paragraph(f"Generated {now}  \u00b7  {tc}  \u00b7  Fundamental analysis", s_cover_meta))
+    story.append(Spacer(1, 0.5*cm))
     story.append(Paragraph(
-        "This report is AI-generated for informational purposes only and does not constitute investment advice. "
-        "All figures are sourced from roic.ai. Verify all data independently before making investment decisions.",
-        disclaimer_style))
+        "This report is AI-generated for informational purposes only and does not constitute "
+        "investment advice. All financial figures are sourced from roic.ai. "
+        "Verify all data independently before making investment decisions.",
+        s_disc))
+    story.append(hr())
 
-    def clean_md(text):
-        """Convert markdown to reportlab XML."""
-        # Escape & first
-        text = text.replace("&", "&amp;")
-        # Bold
-        text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text)
-        # Italic
-        text = re.sub(r"\*(.+?)\*", r"<i>\1</i>", text)
-        # Inline code
-        text = re.sub(r"`(.+?)`", r"<font face='Courier'>\1</font>", text)
-        return text.strip()
+    # ── Helper: render a plotly figure as an image ────────────────────────────
+    def add_chart(fig, title, width_cm=16):
+        try:
+            import plotly.io as pio
+            img_bytes = pio.to_image(fig, format="png", width=900, height=380,
+                                      scale=2, engine="kaleido")
+            img_buf = io.BytesIO(img_bytes)
+            img_w   = width_cm * cm
+            img_h   = img_w * (380 / 900)
+            story.append(RLImage(img_buf, width=img_w, height=img_h))
+            story.append(Paragraph(title, s_caption))
+        except Exception:
+            pass  # skip chart silently if kaleido not available
 
-    def add_body(text):
-        for line in text.split("\n"):
-            line = line.strip()
-            if not line:
-                story.append(Spacer(1, 3))
-                continue
-            if "[REDACTED" in line:
-                story.append(Paragraph(clean_md(line), redacted_style))
-            elif line.startswith(("- ", "* ", "\u2022 ")):
-                story.append(Paragraph("\u2022\u00a0\u00a0" + clean_md(line[2:]), bullet_style))
-            else:
-                story.append(Paragraph(clean_md(line), body_style))
-
-    # Split on section headings (1. TITLE or **1. TITLE**)
-    section_re = re.compile(r"(?m)^(?:\*\*)?(\d+[\.\:]\s+[A-Z][A-Z0-9 &\'\-\/\(\)]+)(?:\*\*)?")
+    # ── Parse and render report sections ─────────────────────────────────────
+    section_re = re.compile(
+        r"(?m)^(\d+[\.\)]\s+[A-Z][A-Z0-9 &\'\-\/\(\)]{2,})\s*$"
+    )
     parts = section_re.split(report_text)
 
-    # Preamble before first section
+    # Any text before first heading
     if parts[0].strip():
-        add_body(parts[0])
+        for para in parts[0].strip().split("\n\n"):
+            if para.strip():
+                story.append(Paragraph(para.strip(), s_body))
+
+    SECTION_CHART_MAP = {
+        "1": 0,  # Business Overview -> Revenue chart
+        "4": 1,  # Financial Health  -> FCF chart
+    }
 
     i = 1
+    section_num = 0
     while i < len(parts) - 1:
-        heading  = parts[i].strip().strip("*").strip()
+        heading  = parts[i].strip()
         body_txt = parts[i+1] if i+1 < len(parts) else ""
+        sec_num  = heading[0]
+
         story.append(KeepTogether([
-            HRFlowable(width="100%", thickness=0.5, color=RULE, spaceBefore=8, spaceAfter=6),
-            Paragraph(heading, sec_heading),
+            hr(thick=0.4, before=2, after=2),
+            Paragraph(heading, s_sec),
         ]))
-        add_body(body_txt)
+
+        # Body paragraphs — split on double newline
+        paragraphs = [p.strip() for p in re.split(r"\n\n+", body_txt) if p.strip()]
+        for para in paragraphs:
+            # Skip single-line "headers" that leaked through
+            if re.match(r"^[A-Z][A-Z\s&:]{3,}:?\s*$", para) and len(para) < 60:
+                story.append(Paragraph(para, s_sec))
+            else:
+                # Clean inline markdown
+                para = re.sub(r"\*{2}(.+?)\*{2}", r"<b>\1</b>", para)
+                para = re.sub(r"\*(.+?)\*",       r"<i>\1</i>", para)
+                para = para.replace("&", "&amp;")
+                story.append(Paragraph(para, s_body))
+
+        # Insert chart after relevant sections
+        if chart_figs and sec_num in SECTION_CHART_MAP:
+            chart_idx = SECTION_CHART_MAP[sec_num]
+            if chart_idx < len(chart_figs):
+                chart_title, chart_fig = chart_figs[chart_idx]
+                story.append(Spacer(1, 4*mm))
+                add_chart(chart_fig, chart_title)
+
         i += 2
+        section_num += 1
 
-    # Footer
+    # ── Remaining charts at end ───────────────────────────────────────────────
+    if chart_figs and len(chart_figs) > 2:
+        story.append(hr(before=4, after=4))
+        story.append(Paragraph("FINANCIAL CHARTS", s_sec))
+        for chart_title, chart_fig in chart_figs[2:]:
+            add_chart(chart_fig, chart_title)
+
+    # ── Footer ────────────────────────────────────────────────────────────────
     story.append(Spacer(1, 1*cm))
-    story.append(HRFlowable(width="100%", thickness=0.5, color=RULE, spaceAfter=4))
+    story.append(hr(thick=0.4, before=0, after=2))
     story.append(Paragraph(
-        f"Compounder  \u00b7  {company} ({ticker})  \u00b7  Generated {now}  \u00b7  For informational use only",
-        footer_style))
+        f"Compounder  \u00b7  {company} ({ticker})  \u00b7  {now}  \u00b7  For informational use only",
+        s_footer))
 
+    doc = SimpleDocTemplate(
+        buf, pagesize=A4,
+        leftMargin=lm, rightMargin=rm,
+        topMargin=2.2*cm, bottomMargin=2.2*cm,
+    )
     doc.build(story)
     buf.seek(0)
     return buf.read()
-
 
 # ── Number helpers ────────────────────────────────────────────────────────────
 def safe(df, *cols):
@@ -1457,9 +1526,26 @@ else:
             st.markdown(report_text)
             st.markdown("---")
 
-            # Build PDF
+            # Build PDF — pass pre-generated charts (no extra tokens)
             with st.spinner("Building PDF..."):
-                pdf_bytes = build_report_pdf(company, ticker, report_text, transcripts)
+                chart_figs = []
+                # Revenue chart
+                rev_b = [v/1e9 if v and not pd.isna(v) else None for v in rev_s]
+                if any(v for v in rev_b if v):
+                    chart_figs.append(("Revenue (USD billions)", make_bar(years, rev_b, "Annual Revenue")))
+                # FCF chart
+                if fcf_s.notna().any():
+                    fcf_b_pdf = [v/1e9 if v and not pd.isna(v) else None for v in fcf_s]
+                    chart_figs.append(("Free Cash Flow (USD billions)", make_bar(years, fcf_b_pdf, "Free Cash Flow")))
+                # Margins chart
+                gm_pct_pdf  = to_pct_list(gm_s)
+                opm_pct_pdf = to_pct_list(opm_s)
+                npm_pct_pdf = to_pct_list(npm_s)
+                if any(v for v in gm_pct_pdf if v):
+                    chart_figs.append(("Profit Margins (%)",
+                        make_line(years, [gm_pct_pdf, opm_pct_pdf, npm_pct_pdf],
+                                  ["Gross", "Operating", "Net"], "Margins")))
+                pdf_bytes = build_report_pdf(company, ticker, report_text, transcripts, chart_figs)
 
             st.download_button(
                 label="Download PDF",
