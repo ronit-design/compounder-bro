@@ -1634,10 +1634,11 @@ else:
 
     # SBC-related cash flow series (for Owners' Earnings tab)
     _cf = lambda *cols: align(safe(cf, *cols) if n_cf else pd.Series(dtype=float), n)
-    sbc_s      = _cf("cf_stock_based_comp", "cf_stock_compensation", "cf_sbc", "stock_based_compensation")
-    buybacks_s = _cf("cf_repurchase_of_common_stock", "cf_common_stock_repurchased", "cf_buybacks", "cf_repurchases")
-    rsu_tax_s  = _cf("cf_taxes_related_to_net_share_settlement", "cf_taxes_net_share_settlement",
-                     "cf_payment_for_taxes_net_share_settlement", "cf_employee_withholding_taxes")
+    sbc_s       = _cf("cf_stock_based_compensation")
+    incr_cap_s  = _cf("cf_incr_cap_stock")   # cash received from share issuances
+    decr_cap_s  = _cf("cf_decr_cap_stock")   # cash spent on share repurchases
+    rsu_tax_s   = _cf("cf_taxes_related_to_net_share_settlement", "cf_taxes_net_share_settlement",
+                      "cf_payment_for_taxes_net_share_settlement", "cf_employee_withholding_taxes")
 
     # Balance sheet series — use bs_years for working capital, align to n for valuation
     bs_years = bs["Date"].dt.year.astype(str).tolist() if not bs.empty and "Date" in bs.columns else years
@@ -2019,31 +2020,42 @@ else:
                 else:
                     dil_list.append(None)
 
+        # ── Net buybacks year by year ──────────────────────────────────────────
+        # Net buyback = cash spent repurchasing shares − cash received from issuances
+        # Both fields may be stored as positive or negative; use abs() to normalise.
+        net_bb_list = []
+        for i in range(len(years)):
+            decr = _absv(decr_cap_s, i)   # repurchases
+            incr = _absv(incr_cap_s, i)   # issuances
+            if decr is None and incr is None:
+                net_bb_list.append(None)
+            else:
+                net_bb_list.append((decr or 0) - (incr or 0))
+
         # ── Owners' Earnings year by year ─────────────────────────────────────
         # Formula: Net Income + GAAP SBC (add back non-cash deduction)
-        #          − abs(Buybacks) − abs(RSU tax withholdings)
+        #          − Net Buybacks − RSU tax withholdings (if available)
         oe_list   = []
         ni_list   = ni_s.tolist()
         for i in range(len(years)):
-            ni  = _v(ni_s, i)
-            sbc = _v(sbc_s, i)
-            bb  = _absv(buybacks_s, i)
-            rst = _absv(rsu_tax_s, i)
+            ni     = _v(ni_s, i)
+            sbc    = _v(sbc_s, i)
+            net_bb = net_bb_list[i]
+            rst    = _absv(rsu_tax_s, i)
             if ni is None:
                 oe_list.append(None)
                 continue
             oe = ni
-            if sbc is not None: oe += abs(sbc)   # remove non-cash GAAP SBC deduction
-            if bb  is not None: oe -= bb           # true buyback cost
-            if rst is not None: oe -= rst          # RSU tax withholdings
+            if sbc    is not None: oe += abs(sbc)   # remove non-cash GAAP SBC deduction
+            if net_bb is not None: oe -= net_bb      # net cost of share repurchase programme
+            if rst    is not None: oe -= rst          # RSU tax withholdings
             oe_list.append(oe)
 
         # ── KPI row ────────────────────────────────────────────────────────────
-        latest_oe  = next((v for v in reversed(oe_list)  if v is not None), None)
-        latest_ni  = next((v for v in reversed(ni_list)  if v is not None), None)
-        latest_dil = next((v for v in reversed(dil_list) if v is not None), None)
-        latest_sbc = next((_v(sbc_s, i) for i in range(len(years)-1, -1, -1) if _v(sbc_s, i) is not None), None)
-        latest_bb  = next((_absv(buybacks_s, i) for i in range(len(years)-1, -1, -1) if _absv(buybacks_s, i) is not None), None)
+        latest_oe     = next((v for v in reversed(oe_list)     if v is not None), None)
+        latest_ni     = next((v for v in reversed(ni_list)     if v is not None), None)
+        latest_dil    = next((v for v in reversed(dil_list)    if v is not None), None)
+        latest_net_bb = next((v for v in reversed(net_bb_list) if v is not None), None)
 
         oe_pct_gaap = (latest_oe / latest_ni * 100) if (latest_oe and latest_ni and latest_ni != 0) else None
 
@@ -2071,7 +2083,7 @@ else:
         oe_kpi(ek3, "Annual Dilution",
                (f"+{latest_dil:.2f}%" if latest_dil and latest_dil >= 0 else f"{latest_dil:.2f}%") if latest_dil is not None else "—",
                "YoY share count change")
-        oe_kpi(ek4, "Buybacks (latest yr)", fmt_currency(latest_bb, ccy), "cash spent on repurchases")
+        oe_kpi(ek4, "Net Buybacks (latest yr)", fmt_currency(latest_net_bb, ccy), "repurchases − issuances")
 
         st.markdown("<br>", unsafe_allow_html=True)
 
@@ -2103,26 +2115,22 @@ else:
         # ── Section 2: SBC Cost Analysis ──────────────────────────────────────
         st.markdown('<span class="section-label">SBC Cost Analysis</span>', unsafe_allow_html=True)
 
-        sbc_b  = [abs(_v(sbc_s, i))/1e9       if _v(sbc_s, i)       is not None else None for i in range(len(years))]
-        bb_b   = [_absv(buybacks_s, i)/1e9     if _absv(buybacks_s, i) is not None else None for i in range(len(years))]
-        rst_b  = [_absv(rsu_tax_s, i)/1e9      if _absv(rsu_tax_s, i)  is not None else None for i in range(len(years))]
-        true_sbc_b = [
-            (bb or 0) + (rst or 0) if (bb is not None or rst is not None) else None
-            for bb, rst in zip(bb_b, rst_b)
-        ]
+        sbc_b     = [abs(_v(sbc_s, i))/1e9  if _v(sbc_s, i)  is not None else None for i in range(len(years))]
+        net_bb_b  = [net_bb_list[i]/1e9     if net_bb_list[i] is not None else None for i in range(len(years))]
+        rst_b     = [_absv(rsu_tax_s, i)/1e9 if _absv(rsu_tax_s, i) is not None else None for i in range(len(years))]
 
-        has_sbc      = any(v is not None for v in sbc_b)
-        has_buybacks = any(v is not None for v in bb_b)
-        has_rsu      = any(v is not None for v in rst_b)
+        has_sbc    = any(v is not None for v in sbc_b)
+        has_net_bb = any(v is not None for v in net_bb_b)
+        has_rsu    = any(v is not None for v in rst_b)
 
-        if has_sbc or has_buybacks:
+        if has_sbc or has_net_bb:
             sbc_traces = []
             if has_sbc:
                 sbc_traces.append(go.Bar(name="GAAP SBC Expense", x=years, y=sbc_b,
                                          marker_color="#AAAAAA", marker_line_width=0,
                                          hovertemplate="%{x}: " + ccy + "%{y:.2f}B<extra></extra>"))
-            if has_buybacks:
-                sbc_traces.append(go.Bar(name="Buybacks", x=years, y=bb_b,
+            if has_net_bb:
+                sbc_traces.append(go.Bar(name="Net Buybacks (Repurchases − Issuances)", x=years, y=net_bb_b,
                                          marker_color=C_DOWN, marker_line_width=0,
                                          hovertemplate="%{x}: " + ccy + "%{y:.2f}B<extra></extra>"))
             if has_rsu:
@@ -2136,13 +2144,13 @@ else:
                 title_text="GAAP SBC vs True SBC Cost  ($B)",
                 legend=dict(orientation="h", y=1.08, x=0, font=dict(size=10)),
                 yaxis=dict(tickprefix=ccy, ticksuffix="B", showgrid=True, gridcolor=C_BORDER2,
-                           tickfont=dict(size=10, color=C_TEXT3), zeroline=False),
+                           tickfont=dict(size=10, color=C_TEXT3), zeroline=True, zerolinecolor=C_BORDER),
             )
             st.plotly_chart(fig_sbc, use_container_width=True, config={"displayModeBar": False})
             if not has_rsu:
                 st.markdown(
                     '<div style="font-size:0.72rem;color:#999;margin-top:-0.5rem">'
-                    'RSU tax withholding data not available from API — True SBC Cost = Buybacks only. '
+                    'RSU tax withholding data not available from ROIC API — True SBC Cost = Net Buybacks only. '
                     'Full cost also includes RSU-vesting tax payments in financing activities (per FASB ASU 2016-09).'
                     '</div>', unsafe_allow_html=True)
         else:
@@ -2179,10 +2187,10 @@ else:
             return f"{sign}{v:.1f}%"
 
         oe_rows = {
-            "Net Income (GAAP)":        [_fmt_b(_v(ni_s, i))         for i in range(len(years))],
-            "GAAP SBC (add back)":      [_fmt_b(abs(_v(sbc_s,i))) if _v(sbc_s,i) is not None else "—" for i in range(len(years))],
-            "Buybacks":                 [_fmt_b(-_absv(buybacks_s,i)) if _absv(buybacks_s,i) is not None else "—" for i in range(len(years))],
-            "RSU Tax Withholdings":     [_fmt_b(-_absv(rsu_tax_s,i)) if _absv(rsu_tax_s,i) is not None else "n/a" for i in range(len(years))],
+            "Net Income (GAAP)":        [_fmt_b(_v(ni_s, i))          for i in range(len(years))],
+            "GAAP SBC (add back)":      [_fmt_b(abs(_v(sbc_s,i)))     if _v(sbc_s,i) is not None else "—"  for i in range(len(years))],
+            "Net Buybacks (subtract)":  [_fmt_b(-net_bb_list[i])      if net_bb_list[i] is not None else "—" for i in range(len(years))],
+            "RSU Tax Withholdings":     [_fmt_b(-_absv(rsu_tax_s,i))  if _absv(rsu_tax_s,i) is not None else "n/a" for i in range(len(years))],
             "Owners' Earnings":         [_fmt_b(oe_list[i])           for i in range(len(years))],
             "OE as % of GAAP NI":       [
                 (f"{oe_list[i]/ni_list[i]*100:.0f}%"
