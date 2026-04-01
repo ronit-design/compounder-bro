@@ -1802,7 +1802,7 @@ else:
                 **{y: [val_ys[j][i] if val_ys[j][i] else None for j in range(len(val_names))]
                    for i, y in enumerate(years)}
             }).set_index("Metric")
-            val_display = val_display.applymap(lambda v: fmt_multiple(v) if v else "—")
+            val_display = val_display.map(lambda v: fmt_multiple(v) if v else "—")
             st.dataframe(val_display, use_container_width=True)
         else:
             st.markdown('<span style="color:#999;font-size:0.82rem">Stock price required to calculate multiples. Add a Stock Price column to your Google Sheet.</span>', unsafe_allow_html=True)
