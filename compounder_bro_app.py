@@ -795,38 +795,49 @@ def _fmt_notes_signals(signals_by_year):
 def generate_forensic_report(company, ticker, xbrl_table, notes_summary, api_key):
     """Pass 2: Full Graham forensic synthesis."""
     prompt = f"""SYSTEM ROLE:
-You are a strict, quantitative security analyst and forensic auditor, operating exclusively on the principles laid out by Benjamin Graham and David Dodd in Security Analysis. You do not accept Wall Street's simplified metrics or the modern obsession with placing the entire weight of valuation on a single "earnings per share" figure. Your job is to extract the mathematical truth of a company's earning power and financial safety, ignoring the "psychological excesses" of the market.
+You are a strict, quantitative security analyst and forensic auditor, operating on the principles of Benjamin Graham and David Dodd. Your job is to extract the mathematical truth of a company's earning power and financial integrity — cutting through accounting noise to tell an investor exactly what is really going on.
 
 YOUR DIRECTIVE:
-Analyze the last 5 years of financial data for {company} ({ticker}). Absorb and equalize the distorting influences of the business cycle. Systematically dismantle the reported income account and recalculate true economic reality using Graham's quantitative tests. Translation Directive: aggressively map Graham's 1930s terminology to modern GAAP/IFRS. When Graham refers to the "Surplus Account," scrutinize modern Retained Earnings and Accumulated OCI for buried operating losses.
+Analyze the last 5 years of financial data for {company} ({ticker}). Systematically dismantle the reported income account and recalculate true economic reality using the forensic tests below. Where Graham refers to the "Surplus Account," scrutinize Retained Earnings and Accumulated OCI for buried losses.
 
-EXECUTION STEPS:
+EXECUTION STEPS (perform all calculations in the scratchpad):
 
-1. Tax-Accrual Sanity Check: Calculate implied taxable profit from tax accrued. Compare with reported earnings. Flag wide divergences as potential manipulation.
+1. Tax-Accrual Sanity Check: Calculate implied taxable profit from tax accrued (Tax Expense ÷ effective rate). Compare with reported pre-tax income. Flag wide divergences.
 
-2. Normalizing the Income Account: Strip all nonrecurrent items. Treat extraordinary write-downs as operating losses averaged over the period, even if buried below the line or in equity.
+2. Normalizing the Income Account: Strip nonrecurrent items. Average any extraordinary write-downs over the full period, even if buried below the line or in equity.
 
-3. Total-Deductions Method: Combine all fixed charges and preferred dividends. Include one-third of annual lease/rental expenses with fixed charges. For industrials: minimum 3x coverage for bonds; 4x for preferred stocks.
+3. Total-Deductions Coverage: Combine interest expense + preferred dividends + one-third of annual lease/rental expense. Calculate coverage ratio against normalized operating income.
 
-4. Stock-Value Ratio: Calculate equity cushion vs total funded debt. Require minimum $1 stock value per $1 bonds.
+4. Debt-to-Equity Safety: Calculate equity cushion vs total funded debt (long-term debt).
 
-5. Unmasking Depreciation Maneuvers: Calculate implied depreciation rate (D&A / Gross PP&E) for each year. If the rate drops without fundamental justification, recalculate using the historical average rate and deduct the difference from reported earnings.
+5. Depreciation Manipulation: Calculate implied depreciation rate (D&A ÷ Gross PP&E) each year. If the rate drops without justification, recalculate using the historical average and note the earnings inflation.
 
-6. Forensic Detection:
-   a. Off-Balance Sheet (SPVs/VIEs): Consolidate any guaranteed obligations back onto the balance sheet before calculating coverage ratios.
-   b. Capitalizing Operating Expenses: Flag NI vs CFO divergence. Check for intangible/capitalized software spikes. Deduct suspicious capitalizations from operating income.
-   c. Revenue Front-Running: If AR grows significantly faster than revenue over multiple years, adjust earning power downward proportionally.
-   d. Pension Return Fictions: If assumed return is disconnected from current bond yields, recalculate pension expense and subtract illusionary profit.
+6. Forensic Red Flags:
+   a. Capitalizing Operating Expenses: Flag persistent NI vs CFO divergence. Check for intangible/capitalized software spikes.
+   b. Revenue Front-Running: If Accounts Receivable grows significantly faster than Revenue over multiple years, note the implied earnings quality risk.
+   c. Pension Return Fictions: If assumed return on plan assets is disclosed and appears disconnected from current bond yields, flag the illusionary profit component.
+   d. Off-Balance Sheet (SPVs/VIEs): Note any guaranteed obligations or unconsolidated entities that should be considered.
 
 REQUIRED OUTPUT FORMAT:
 
-First, open a <forensic_scratchpad> block. Lay out all raw data, perform step-by-step math for 5-year averages, and note "DATA INSUFFICIENT" where variables are missing. Show every calculation explicitly.
+First, open a <forensic_scratchpad> block. Show all raw numbers pulled from the data, step-by-step arithmetic for each test above, and write "DATA INSUFFICIENT" where a variable is missing. Be explicit with every calculation.
 
-Then write the Final Verdict:
-- True Earning Power: 5-to-10-year average earnings, fully adjusted for nonrecurrent items and normalized depreciation.
-- Quantitative Safety Tests: Exact math for Total-Deductions Interest Coverage (including 1/3 rentals) and Stock-Value Ratio.
-- Forensic Discrepancies: Tax-accrued vs reported income gap. Losses inappropriately buried in retained earnings/OCI. Depreciation manipulation if present.
-- Graham's Verdict: Does this security offer a mathematically demonstrable margin of safety? Completely ignore qualitative "prospects," "synergies," or "growth trends."
+Then write a Forensic Analysis Report — written in plain English for a sophisticated but non-technical investor. The report must explain what each finding actually means in practice, not just state a number. Structure it as:
+
+## Earnings Quality
+Explain whether reported earnings are a reliable measure of the company's true earning power. Cover normalized earnings, the tax sanity check result, and NI vs CFO divergence. Write at least 3 substantial paragraphs.
+
+## Accounting Integrity
+Explain what the notes to the financial statements reveal. Cover any policy changes, unusual capitalizations, changes in useful life estimates, or revenue recognition concerns. Write at least 2 substantial paragraphs.
+
+## Balance Sheet & Debt Safety
+Explain the company's debt position, coverage ratios, and whether the balance sheet has been obscured by off-balance sheet items or operating lease commitments. Write at least 2 substantial paragraphs.
+
+## Red Flags & Anomalies
+Summarise the most important discrepancies found — depreciation manipulation, buried OCI losses, receivables front-running, pension fictions, or auditor qualifications. If none were found, say so explicitly and explain why the data is clean. Write at least 2 substantial paragraphs.
+
+## Summary
+A concise 1-paragraph summary of the overall picture: is this a company with transparent, reliable financials, or are there material concerns an investor must investigate further? Do not comment on valuation.
 
 === 5-YEAR QUANTITATIVE DATA (USD) ===
 {xbrl_table}
