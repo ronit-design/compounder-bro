@@ -2231,16 +2231,27 @@ else:
         st.markdown("<br>", unsafe_allow_html=True)
 
         # ── Section 3: Owners' Earnings ────────────────────────────────────────
-        st.markdown('<span class="section-label">Owners\' Earnings vs GAAP Net Income</span>', unsafe_allow_html=True)
+        st.markdown('<span class="section-label">Owners\' Earnings vs GAAP Net Income — Per Share</span>', unsafe_allow_html=True)
 
-        ni_b_list  = [v/1e9 if v is not None and not pd.isna(v) else None for v in ni_list]
-        oe_b_list  = [v/1e9 if v is not None else None for v in oe_list]
+        # GAAP NI per share: NI[i] / shares[i-1]  (last year's diluted share count)
+        # OE per share:      OE[i] / shares[i]     (current year's diluted share count)
+        sh_vals = shares_s.tolist()
+        ni_ps_list = []
+        oe_ps_list = []
+        for i in range(len(years)):
+            ni  = ni_list[i]
+            oe  = oe_list[i]
+            sh_curr = sh_vals[i]   if (i < len(sh_vals) and sh_vals[i] and not pd.isna(sh_vals[i])) else None
+            sh_prev = sh_vals[i-1] if (i > 0 and sh_vals[i-1] and not pd.isna(sh_vals[i-1])) else sh_curr
 
-        if any(v is not None for v in oe_list):
-            oe_series = [ni_b_list, oe_b_list]
-            oe_names  = ["GAAP Net Income", "Owners' Earnings"]
-            fig_oe = make_line(years, oe_series, oe_names, f"Owners' Earnings vs Net Income  ({ccy_code}, B)", height=320)
-            fig_oe.update_layout(yaxis=dict(tickprefix=ccy, ticksuffix="B", showgrid=True,
+            ni_ps_list.append(ni / sh_prev if (ni is not None and sh_prev) else None)
+            oe_ps_list.append(oe / sh_curr if (oe is not None and sh_curr) else None)
+
+        if any(v is not None for v in oe_ps_list):
+            oe_series = [ni_ps_list, oe_ps_list]
+            oe_names  = ["GAAP NI per Share (prior yr shares)", "Owners' Earnings per Share (current yr shares)"]
+            fig_oe = make_line(years, oe_series, oe_names, f"Per Share  ({ccy_code})", height=320)
+            fig_oe.update_layout(yaxis=dict(tickprefix=ccy, showgrid=True,
                                             gridcolor=C_BORDER2, tickfont=dict(size=10, color=C_TEXT3),
                                             zeroline=True, zerolinecolor=C_BORDER, showline=False))
             st.plotly_chart(fig_oe, use_container_width=True, config={"displayModeBar": False})
@@ -2272,6 +2283,14 @@ else:
                 (f"{oe_list[i]/ni_list[i]*100:.0f}%"
                  if (oe_list[i] is not None and ni_list[i] and not pd.isna(ni_list[i]) and ni_list[i] != 0)
                  else "—")
+                for i in range(len(years))
+            ],
+            "GAAP NI / Share (prior yr sh)": [
+                f"{ccy}{ni_ps_list[i]:.2f}" if ni_ps_list[i] is not None else "—"
+                for i in range(len(years))
+            ],
+            "OE / Share (current yr sh)": [
+                f"{ccy}{oe_ps_list[i]:.2f}" if oe_ps_list[i] is not None else "—"
                 for i in range(len(years))
             ],
             "Annual Dilution":          [_fmt_pct(dil_list[i])        for i in range(len(years))],
