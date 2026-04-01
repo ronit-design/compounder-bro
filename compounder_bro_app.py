@@ -2698,7 +2698,8 @@ else:
                         )
 
                 st.markdown("---")
-                st.markdown(_verdict if _verdict else _fa_text)
+                _report_display = (_verdict if _verdict else _fa_text).replace("$", r"\$")
+                st.markdown(_report_display)
                 st.markdown("---")
 
                 # Supporting data expanders
