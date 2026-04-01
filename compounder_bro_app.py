@@ -540,6 +540,303 @@ def fetch_rsu_tax_xbrl(ticker):
         return {}
 
 
+# ── Forensic Accounting ────────────────────────────────────────────────────────
+
+def edgar_list_filings(cik, form_type, n=5):
+    """Return list of (accession_no_dashes, filing_date, report_year) for the last n filings."""
+    try:
+        hdrs = {"User-Agent": "compounder-app research@example.com"}
+        r = requests.get(f"https://data.sec.gov/submissions/CIK{cik}.json",
+                         headers=hdrs, timeout=15)
+        r.raise_for_status()
+        recent   = r.json().get("filings", {}).get("recent", {})
+        forms    = recent.get("form", [])
+        accnums  = recent.get("accessionNumber", [])
+        dates    = recent.get("filingDate", [])
+        rptdates = recent.get("reportDate", dates)
+        results  = []
+        for i, form in enumerate(forms):
+            if form in (form_type, form_type + "/A"):
+                rpt         = rptdates[i] if i < len(rptdates) else dates[i]
+                report_year = str(rpt)[:4] if rpt else str(dates[i])[:4]
+                results.append((accnums[i].replace("-", ""), dates[i], report_year))
+            if len(results) >= n:
+                break
+        return results
+    except:
+        return []
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def fetch_forensic_xbrl(ticker):
+    """Pull quantitative forensic metrics from EDGAR XBRL for last 5 annual periods."""
+    cik = edgar_get_cik(ticker)
+    if not cik:
+        return {}
+    try:
+        hdrs = {"User-Agent": "compounder-app research@example.com"}
+        r    = requests.get(f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json",
+                            headers=hdrs, timeout=30)
+        r.raise_for_status()
+        us_gaap = r.json().get("facts", {}).get("us-gaap", {})
+
+        def get_annual(concepts, n=5):
+            for name in concepts:
+                entries = us_gaap.get(name, {}).get("units", {}).get("USD", [])
+                if not entries:
+                    continue
+                by_year, filed_at = {}, {}
+                for e in entries:
+                    if e.get("form") not in ("10-K", "20-F", "10-K/A", "20-F/A"):
+                        continue
+                    yr = (e.get("end") or "")[:4]
+                    fd = e.get("filed", "")
+                    if yr and (yr not in filed_at or fd > filed_at[yr]):
+                        by_year[yr] = e.get("val")
+                        filed_at[yr] = fd
+                if by_year:
+                    yrs = sorted(by_year)[-n:]
+                    return {y: by_year[y] for y in yrs}
+            return {}
+
+        return {
+            "net_income":       get_annual(["NetIncomeLoss", "ProfitLoss"]),
+            "pretax_income":    get_annual(["IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest"]),
+            "tax_expense":      get_annual(["IncomeTaxExpenseBenefit"]),
+            "revenue":          get_annual(["Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax", "SalesRevenueNet"]),
+            "accounts_rec":     get_annual(["AccountsReceivableNetCurrent", "ReceivablesNetCurrent"]),
+            "cfo":              get_annual(["NetCashProvidedByUsedInOperatingActivities"]),
+            "gross_ppe":        get_annual(["PropertyPlantAndEquipmentGross"]),
+            "depreciation":     get_annual(["DepreciationDepletionAndAmortization", "DepreciationAndAmortization"]),
+            "intangibles":      get_annual(["FiniteLivedIntangibleAssetsNet", "IntangibleAssetsNetExcludingGoodwill"]),
+            "goodwill":         get_annual(["Goodwill"]),
+            "goodwill_impair":  get_annual(["GoodwillImpairmentLoss"]),
+            "interest_expense": get_annual(["InterestExpense", "InterestAndDebtExpense"]),
+            "lease_expense":    get_annual(["OperatingLeaseExpense", "LeaseCost", "OperatingLeasesRentExpenseNet"]),
+            "long_term_debt":   get_annual(["LongTermDebt", "LongTermDebtNoncurrent"]),
+            "preferred_div":    get_annual(["DividendsPreferredStock", "PreferredStockDividendsAndOtherAdjustments"]),
+            "oci":              get_annual(["OtherComprehensiveIncomeLossNetOfTax"]),
+            "retained_earnings":get_annual(["RetainedEarningsAccumulatedDeficit"]),
+            "capitalized_sw":   get_annual(["CapitalizedComputerSoftwareNet", "CapitalizedSoftwareDevelopmentCostsForInternalUseNet"]),
+        }
+    except Exception:
+        return {}
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def edgar_fetch_item8_notes(cik, accession_no_dashes, max_chars=14000):
+    """
+    Extract forensically-relevant notes from Item 8 of a 10-K/20-F.
+    Targets: accounting policies, revenue recognition, VIEs, pensions,
+    goodwill/intangibles, leases, contingencies.
+    """
+    import re as _re
+    hdrs = {"User-Agent": "compounder-app research@example.com"}
+    try:
+        acc        = accession_no_dashes
+        acc_dashes = f"{acc[:10]}-{acc[10:12]}-{acc[12:]}"
+        cik_int    = int(cik)
+
+        idx_url = f"https://www.sec.gov/Archives/edgar/data/{cik_int}/{acc}/{acc_dashes}-index.htm"
+        r_idx   = requests.get(idx_url, headers=hdrs, timeout=15)
+        if not r_idx.ok:
+            idx_url = f"https://www.sec.gov/Archives/edgar/data/{cik_int}/{acc_dashes.replace('-','')}/{acc_dashes}-index.htm"
+            r_idx   = requests.get(idx_url, headers=hdrs, timeout=15)
+
+        doc_url = None
+        if r_idx.ok:
+            for row in _re.findall(r'<tr[^>]*>.*?</tr>', r_idx.text, _re.DOTALL | _re.IGNORECASE):
+                hm = _re.search(r'href="(/Archives[^"]+\.htm)"', row, _re.IGNORECASE)
+                tm = _re.search(r'<td[^>]*>\s*(10-K|20-F|FORM 10-K|FORM 20-F)\s*</td>', row, _re.IGNORECASE)
+                if hm and tm:
+                    doc_url = "https://www.sec.gov" + hm.group(1)
+                    break
+            if not doc_url:
+                links = _re.findall(r'href="(/Archives/edgar/data/[^"]+\.htm)"', r_idx.text, _re.IGNORECASE)
+                cands = ["https://www.sec.gov" + l for l in links
+                         if acc.lower() in l.lower().replace("-", "").replace("/", "")]
+                if cands:
+                    doc_url = cands[0]
+
+        if not doc_url:
+            return None
+
+        r_doc = requests.get(doc_url, headers=hdrs, timeout=60)
+        if not r_doc.ok:
+            return None
+
+        text = _re.sub(r"<[^>]{1,200}>", " ", r_doc.text)
+        text = text.replace("&nbsp;", " ").replace("&amp;", "&").replace("&#160;", " ")
+        text = _re.sub(r"\s{3,}", "\n\n", text).strip()
+
+        # Isolate Item 8
+        ms = _re.search(r"(?i)item\s*8[\s.]+financial\s+statements", text)
+        me = _re.search(r"(?i)item\s*9[\s.]+", text[ms.end():]) if ms else None
+        if ms:
+            item8 = text[ms.start(): ms.end() + me.start() if me else ms.start() + 300000]
+        else:
+            item8 = text
+
+        # Collect forensically-relevant note sections
+        note_patterns = [
+            r"(?i)(summary\s+of\s+significant\s+accounting\s+policies|significant\s+accounting\s+policies)",
+            r"(?i)(revenue\s+recognition)",
+            r"(?i)(variable\s+interest\s+entit|off[\s\-]balance[\s\-]sheet|unconsolidated\s+(joint\s+venture|entit))",
+            r"(?i)(pension|defined\s+benefit|retirement\s+benefit)",
+            r"(?i)(goodwill\s+and\s+(intangible|other)|intangible\s+assets\s+and\s+goodwill|useful\s+li(fe|ves))",
+            r"(?i)(commitments\s+and\s+contingencies|legal\s+proceedings\s+and\s+contingencies)",
+            r"(?i)(operating\s+lease|right[\s\-]of[\s\-]use)",
+        ]
+
+        chunks, used = [], []
+        for pat in note_patterns:
+            m = _re.search(pat, item8)
+            if not m:
+                continue
+            s = m.start()
+            if any(a <= s <= b for a, b in used):
+                continue
+            chunks.append(item8[s: s + 2500].strip())
+            used.append((s, s + 2500))
+
+        result = "\n\n---\n\n".join(chunks) if chunks else item8[:max_chars]
+        return result[:max_chars]
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=86400, show_spinner=False)
+def forensic_notes_extract(notes_text, fiscal_year, company, api_key):
+    """Pass 1: Extract structured forensic signals from a single year's notes."""
+    import json as _json, re as _re
+    prompt = f"""You are a forensic accounting assistant. Extract ONLY the following data points from these notes to financial statements for {company} (FY{fiscal_year}). Return ONLY valid compact JSON, no explanation, no markdown fences.
+
+{{
+  "vies_spvs": "<guaranteed obligations or unconsolidated VIEs/SPVs, max 200 chars, or null>",
+  "pension_assumed_return_pct": <number or null>,
+  "pension_discount_rate_pct": <number or null>,
+  "ppe_useful_lives": "<key asset classes with stated useful lives, max 150 chars, or null>",
+  "revenue_recognition_policy": "<one sentence on when/how revenue is recognized, or null>",
+  "explicit_policy_changes": "<any accounting policy changes explicitly disclosed this year, or null>",
+  "oci_buried_losses": "<OCI items that may represent buried operating losses, max 150 chars, or null>",
+  "contingent_liabilities": "<top contingent liability descriptions, max 200 chars, or null>",
+  "auditor_name": "<auditor firm name or null>",
+  "auditor_qualification": "<going concern, emphasis of matter, or null>",
+  "capitalized_costs_policy": "<capitalized software or R&D policy, or null>"
+}}
+
+NOTES (FY{fiscal_year}):
+{notes_text[:11000]}"""
+    try:
+        raw = _call_nvidia([{"role": "user", "content": prompt}], api_key, max_tokens=700)
+        m   = _re.search(r'\{[\s\S]*\}', raw)
+        return _json.loads(m.group(0)) if m else {}
+    except Exception:
+        return {}
+
+
+def _fmt_xbrl_table(xbrl):
+    """Format XBRL forensic data as a clean text table (values in $B or %)."""
+    if not xbrl:
+        return "XBRL data unavailable."
+    all_years = set()
+    for v in xbrl.values():
+        if isinstance(v, dict):
+            all_years.update(v.keys())
+    years = sorted(all_years)[-5:]
+
+    def fv(val):
+        if val is None: return "    n/a"
+        return f"{val/1e9:>7.2f}B"
+
+    labels = {
+        "revenue":          "Revenue",
+        "net_income":       "Net Income",
+        "pretax_income":    "Pre-tax Income",
+        "tax_expense":      "Tax Expense",
+        "cfo":              "Cash from Operations",
+        "accounts_rec":     "Accounts Receivable",
+        "gross_ppe":        "Gross PP&E",
+        "depreciation":     "D&A",
+        "intangibles":      "Intangible Assets",
+        "goodwill":         "Goodwill",
+        "goodwill_impair":  "Goodwill Impairments",
+        "interest_expense": "Interest Expense",
+        "lease_expense":    "Lease/Rental Expense",
+        "long_term_debt":   "Long-Term Debt",
+        "preferred_div":    "Preferred Dividends",
+        "oci":              "OCI (net)",
+        "retained_earnings":"Retained Earnings",
+        "capitalized_sw":   "Capitalized Software",
+    }
+    header = f"{'Metric':<24} " + "  ".join(f"{y:>9}" for y in years)
+    rows   = [header, "-" * len(header)]
+    for key, lbl in labels.items():
+        series = xbrl.get(key, {})
+        rows.append(f"{lbl:<24} " + "  ".join(fv(series.get(y)) for y in years))
+    return "\n".join(rows)
+
+
+def _fmt_notes_signals(signals_by_year):
+    """Format Pass-1 extracted notes signals as readable text."""
+    lines = []
+    for yr in sorted(signals_by_year.keys()):
+        sig = signals_by_year[yr]
+        if not sig:
+            continue
+        lines.append(f"FY{yr}:")
+        for k, v in sig.items():
+            if v and str(v).lower() not in ("null", "none", ""):
+                lines.append(f"  {k.replace('_',' ')}: {v}")
+    return "\n".join(lines) if lines else "Notes extraction unavailable."
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def generate_forensic_report(company, ticker, xbrl_table, notes_summary, api_key):
+    """Pass 2: Full Graham forensic synthesis."""
+    prompt = f"""SYSTEM ROLE:
+You are a strict, quantitative security analyst and forensic auditor, operating exclusively on the principles laid out by Benjamin Graham and David Dodd in Security Analysis. You do not accept Wall Street's simplified metrics or the modern obsession with placing the entire weight of valuation on a single "earnings per share" figure. Your job is to extract the mathematical truth of a company's earning power and financial safety, ignoring the "psychological excesses" of the market.
+
+YOUR DIRECTIVE:
+Analyze the last 5 years of financial data for {company} ({ticker}). Absorb and equalize the distorting influences of the business cycle. Systematically dismantle the reported income account and recalculate true economic reality using Graham's quantitative tests. Translation Directive: aggressively map Graham's 1930s terminology to modern GAAP/IFRS. When Graham refers to the "Surplus Account," scrutinize modern Retained Earnings and Accumulated OCI for buried operating losses.
+
+EXECUTION STEPS:
+
+1. Tax-Accrual Sanity Check: Calculate implied taxable profit from tax accrued. Compare with reported earnings. Flag wide divergences as potential manipulation.
+
+2. Normalizing the Income Account: Strip all nonrecurrent items. Treat extraordinary write-downs as operating losses averaged over the period, even if buried below the line or in equity.
+
+3. Total-Deductions Method: Combine all fixed charges and preferred dividends. Include one-third of annual lease/rental expenses with fixed charges. For industrials: minimum 3x coverage for bonds; 4x for preferred stocks.
+
+4. Stock-Value Ratio: Calculate equity cushion vs total funded debt. Require minimum $1 stock value per $1 bonds.
+
+5. Unmasking Depreciation Maneuvers: Calculate implied depreciation rate (D&A / Gross PP&E) for each year. If the rate drops without fundamental justification, recalculate using the historical average rate and deduct the difference from reported earnings.
+
+6. Forensic Detection:
+   a. Off-Balance Sheet (SPVs/VIEs): Consolidate any guaranteed obligations back onto the balance sheet before calculating coverage ratios.
+   b. Capitalizing Operating Expenses: Flag NI vs CFO divergence. Check for intangible/capitalized software spikes. Deduct suspicious capitalizations from operating income.
+   c. Revenue Front-Running: If AR grows significantly faster than revenue over multiple years, adjust earning power downward proportionally.
+   d. Pension Return Fictions: If assumed return is disconnected from current bond yields, recalculate pension expense and subtract illusionary profit.
+
+REQUIRED OUTPUT FORMAT:
+
+First, open a <forensic_scratchpad> block. Lay out all raw data, perform step-by-step math for 5-year averages, and note "DATA INSUFFICIENT" where variables are missing. Show every calculation explicitly.
+
+Then write the Final Verdict:
+- True Earning Power: 5-to-10-year average earnings, fully adjusted for nonrecurrent items and normalized depreciation.
+- Quantitative Safety Tests: Exact math for Total-Deductions Interest Coverage (including 1/3 rentals) and Stock-Value Ratio.
+- Forensic Discrepancies: Tax-accrued vs reported income gap. Losses inappropriately buried in retained earnings/OCI. Depreciation manipulation if present.
+- Graham's Verdict: Does this security offer a mathematically demonstrable margin of safety? Completely ignore qualitative "prospects," "synergies," or "growth trends."
+
+=== 5-YEAR QUANTITATIVE DATA (USD) ===
+{xbrl_table}
+
+=== NOTES TO FINANCIAL STATEMENTS — FORENSIC SIGNALS (5 YEARS) ===
+{notes_summary}"""
+
+    return _call_nvidia([{"role": "user", "content": prompt}], api_key, max_tokens=32000)
+
+
 def edgar_fetch_filing_text(cik, accession_no_dashes, max_chars=80000):
     """
     Fetch Business (Item 1) and MD&A (Item 7) from an EDGAR filing.
@@ -1719,7 +2016,7 @@ else:
     st.markdown("<br>", unsafe_allow_html=True)
 
     # ── Tabs — no emojis ──────────────────────────────────────────────────────
-    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["Revenue", "Margins", "Cash Flow", "Valuation", "Working Capital", "Owners' Earnings", "Research Report"])
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7, tab8 = st.tabs(["Revenue", "Margins", "Cash Flow", "Valuation", "Working Capital", "Owners' Earnings", "Forensic Accounting", "Research Report"])
 
     # TAB 1 — Revenue
     with tab1:
@@ -2301,8 +2598,114 @@ else:
                                    }).set_index("Metric")
         st.dataframe(oe_display, use_container_width=True)
 
-    # TAB 7 — Research Report
+    # TAB 7 — Forensic Accounting
     with tab7:
+        _is_non_us = bool(__import__("re").search(r"[.][A-Z]{1,4}$", ticker.upper()))
+
+        st.markdown(
+            '<div style="font-size:0.82rem;color:#555;margin-bottom:1rem;line-height:1.6">'
+            'Runs a Benjamin Graham / David Dodd forensic analysis: Tax-Accrual Sanity Check, '
+            'Depreciation Manipulation, Total-Deductions Coverage, Stock-Value Ratio, '
+            'Off-Balance Sheet SPVs/VIEs, Revenue Front-Running, and Pension Return Fictions. '
+            'Requires SEC EDGAR data — US-listed tickers only. Takes ~60–90 seconds.</div>',
+            unsafe_allow_html=True,
+        )
+
+        if _is_non_us:
+            st.info(f"**{ticker}** is a non-US ticker. Forensic analysis requires SEC EDGAR filings and is only available for US-listed stocks.")
+        else:
+            _fa_key = f"forensic_report_{ticker}"
+            _run_btn = st.button("Generate Forensic Report", key="btn_forensic")
+
+            if _run_btn or _fa_key in st.session_state:
+                if _run_btn:
+                    # Clear cached result so we re-run
+                    st.session_state.pop(_fa_key, None)
+
+                if _fa_key not in st.session_state:
+                    _fa_progress = st.progress(0, text="Step 1 / 12 — Fetching XBRL quantitative data…")
+
+                    # Step 1 — XBRL
+                    _xbrl = fetch_forensic_xbrl(ticker)
+                    _xbrl_table = _fmt_xbrl_table(_xbrl)
+                    _fa_progress.progress(1 / 12, text="Step 1 / 12 — XBRL data fetched.")
+
+                    # Steps 2–6 — fetch Item 8 notes for each of the last 5 annual filings
+                    _cik = edgar_get_cik(ticker)
+                    _filings_10k = edgar_list_filings(_cik, "10-K", n=5) if _cik else []
+                    _filings_20f = edgar_list_filings(_cik, "20-F", n=5) if _cik else []
+                    _filings_all = sorted(_filings_10k + _filings_20f, key=lambda x: x[1], reverse=True)[:5]
+
+                    _notes_raw = {}   # year -> notes text
+                    for _step_i, (_acc, _fdate, _yr) in enumerate(_filings_all):
+                        _fa_progress.progress(
+                            (_step_i + 2) / 12,
+                            text=f"Step {_step_i + 2} / 12 — Fetching Item 8 notes for FY{_yr}…",
+                        )
+                        _notes_raw[_yr] = edgar_fetch_item8_notes(_cik, _acc)
+
+                    # Steps 7–11 — Pass 1 extraction (one NVIDIA call per year)
+                    _nvidia_key = st.secrets.get("NVIDIA_API_KEY", "")
+                    _signals_by_year = {}
+                    for _step_i, (_yr, _ntxt) in enumerate(sorted(_notes_raw.items())):
+                        _fa_progress.progress(
+                            (_step_i + 7) / 12,
+                            text=f"Step {_step_i + 7} / 12 — Extracting forensic signals for FY{_yr}…",
+                        )
+                        if _ntxt:
+                            _signals_by_year[_yr] = forensic_notes_extract(_ntxt, _yr, company, _nvidia_key)
+                        else:
+                            _signals_by_year[_yr] = {}
+
+                    _notes_summary = _fmt_notes_signals(_signals_by_year)
+
+                    # Step 12 — Pass 2 synthesis
+                    _fa_progress.progress(12 / 12, text="Step 12 / 12 — Generating Graham forensic report…")
+                    _forensic_text = generate_forensic_report(company, ticker, _xbrl_table, _notes_summary, _nvidia_key)
+
+                    _fa_progress.empty()
+                    st.session_state[_fa_key] = {
+                        "report":        _forensic_text,
+                        "xbrl_table":    _xbrl_table,
+                        "notes_summary": _notes_summary,
+                    }
+
+                _fa_result = st.session_state[_fa_key]
+                _fa_text   = _fa_result["report"]
+
+                # Split scratchpad from final verdict
+                import re as _re_fa
+                _sp_match = _re_fa.search(r"<forensic_scratchpad>([\s\S]*?)</forensic_scratchpad>", _fa_text, _re_fa.IGNORECASE)
+                _verdict   = _re_fa.sub(r"<forensic_scratchpad>[\s\S]*?</forensic_scratchpad>", "", _fa_text, flags=_re_fa.IGNORECASE).strip()
+
+                if _sp_match:
+                    with st.expander("Forensic Scratchpad (raw calculations)", expanded=False):
+                        st.markdown(
+                            f'<pre style="font-size:0.72rem;line-height:1.5;white-space:pre-wrap">'
+                            f'{_sp_match.group(1).strip()}</pre>',
+                            unsafe_allow_html=True,
+                        )
+
+                st.markdown("---")
+                st.markdown(_verdict if _verdict else _fa_text)
+                st.markdown("---")
+
+                # Supporting data expanders
+                with st.expander("XBRL Quantitative Data", expanded=False):
+                    st.markdown(
+                        f'<pre style="font-size:0.72rem;line-height:1.5">{_fa_result["xbrl_table"]}</pre>',
+                        unsafe_allow_html=True,
+                    )
+                with st.expander("Notes Signals (Pass 1 extraction)", expanded=False):
+                    st.markdown(
+                        f'<pre style="font-size:0.72rem;line-height:1.5">{_fa_result["notes_summary"]}</pre>',
+                        unsafe_allow_html=True,
+                    )
+            else:
+                st.markdown('<div style="color:#ccc;font-size:0.8rem">Click Generate Forensic Report to begin.</div>', unsafe_allow_html=True)
+
+    # TAB 8 — Research Report
+    with tab8:
         st.markdown('<div style="font-size:0.82rem;color:#555;margin-bottom:1.5rem;line-height:1.6">'
                     'Generates a comprehensive equity research report in the style of a Berkshire Hathaway analyst. '
                     'Uses the last 20 years of financial statements, last 4 earnings call transcripts, and web research. '
