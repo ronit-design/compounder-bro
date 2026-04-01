@@ -221,7 +221,7 @@ hr {{
 /* ── Summary table ── */
 .tbl-row {{
     display: grid;
-    grid-template-columns: 1.4fr 0.55fr 0.85fr 0.85fr 0.7fr 0.85fr 0.7fr 0.85fr 0.7fr 0.7fr 0.7fr;
+    grid-template-columns: 1.4fr 0.55fr 0.85fr 0.85fr 0.7fr 0.85fr 0.7fr 0.85fr 0.7fr 0.7fr 0.7fr 0.6fr 0.65fr;
     padding: 0.6rem 0;
     border-bottom: 1px solid {C_BORDER2};
     align-items: center;
