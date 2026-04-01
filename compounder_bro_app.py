@@ -503,167 +503,41 @@ def edgar_latest_filing(cik, form_type):
         return None, None
 
 
-def edgar_list_filings(cik, form_type, n=10):
-    """Return list of (accession_no_dashes, filing_date, report_year) for the last n filings."""
-    try:
-        hdrs = {"User-Agent": "compounder-app research@example.com"}
-        r = requests.get(f"https://data.sec.gov/submissions/CIK{cik}.json",
-                         headers=hdrs, timeout=15)
-        r.raise_for_status()
-        recent   = r.json().get("filings", {}).get("recent", {})
-        forms    = recent.get("form", [])
-        accnums  = recent.get("accessionNumber", [])
-        dates    = recent.get("filingDate", [])
-        rptdates = recent.get("reportDate", dates)   # fiscal year-end date if available
-        results  = []
-        for i, form in enumerate(forms):
-            if form in (form_type, form_type + "/A"):
-                rpt = rptdates[i] if i < len(rptdates) else dates[i]
-                report_year = str(rpt)[:4] if rpt else str(dates[i])[:4]
-                results.append((accnums[i].replace("-", ""), dates[i], report_year))
-            if len(results) >= n:
-                break
-        return results
-    except:
-        return []
-
-
 @st.cache_data(ttl=86400, show_spinner=False)
-def edgar_fetch_cashflow_section(cik, accession_no_dashes):
+def fetch_rsu_tax_xbrl(ticker):
     """
-    Fetch the Consolidated Statement of Cash Flows section from a 10-K/20-F filing.
-    Returns the text of the cash flow statement (financing activities focus).
-    """
-    import re as _re
-    hdrs = {"User-Agent": "compounder-app research@example.com"}
-    try:
-        acc        = accession_no_dashes
-        acc_dashes = f"{acc[:10]}-{acc[10:12]}-{acc[12:]}"
-        cik_int    = int(cik)
-
-        # Find the primary document URL (same logic as edgar_fetch_filing_text)
-        idx_page_url = (f"https://www.sec.gov/Archives/edgar/data/"
-                        f"{cik_int}/{acc}/{acc_dashes}-index.htm")
-        r_idx = requests.get(idx_page_url, headers=hdrs, timeout=15)
-        if not r_idx.ok:
-            idx_page_url = (f"https://www.sec.gov/Archives/edgar/data/"
-                            f"{cik_int}/{acc_dashes.replace('-','')}/{acc_dashes}-index.htm")
-            r_idx = requests.get(idx_page_url, headers=hdrs, timeout=15)
-
-        doc_url = None
-        if r_idx.ok:
-            rows = _re.findall(r'<tr[^>]*>.*?</tr>', r_idx.text, _re.DOTALL | _re.IGNORECASE)
-            for row in rows:
-                href_m = _re.search(r'href="(/Archives[^"]+\.htm)"', row, _re.IGNORECASE)
-                type_m = _re.search(r'<td[^>]*>\s*(10-K|20-F|FORM 10-K|FORM 20-F)\s*</td>', row, _re.IGNORECASE)
-                if href_m and type_m:
-                    doc_url = "https://www.sec.gov" + href_m.group(1)
-                    break
-            if not doc_url:
-                all_links = _re.findall(r'href="(/Archives/edgar/data/[^"]+\.htm)"', r_idx.text, _re.IGNORECASE)
-                candidates = ["https://www.sec.gov" + l for l in all_links
-                              if acc.lower() in l.lower().replace("-", "").replace("/", "")]
-                if candidates:
-                    doc_url = candidates[0]
-
-        if not doc_url:
-            return None
-
-        r_doc = requests.get(doc_url, headers=hdrs, timeout=60)
-        if not r_doc.ok:
-            return None
-
-        text = _re.sub(r"<[^>]{1,200}>", " ", r_doc.text)
-        text = text.replace("&nbsp;", " ").replace("&amp;", "&").replace("&#160;", " ")
-        text = _re.sub(r"\s{3,}", "\n\n", text).strip()
-
-        # Find the cash flow statement
-        cf_start = None
-        for pat in [r"(?i)consolidated\s+statements?\s+of\s+cash\s+flows?",
-                    r"(?i)statements?\s+of\s+cash\s+flows?"]:
-            m = _re.search(pat, text)
-            if m:
-                cf_start = m.start()
-                break
-
-        if cf_start is None:
-            m = _re.search(r"(?i)financing\s+activities", text)
-            if m:
-                cf_start = max(0, m.start() - 3000)
-
-        if cf_start is not None:
-            return text[cf_start:cf_start + 25000]
-
-        return None
-    except Exception:
-        return None
-
-
-@st.cache_data(ttl=86400, show_spinner=False)
-def extract_rsu_tax_nvidia(cf_text, report_year, api_key):
-    """
-    Ask NVIDIA AI to extract the RSU tax withholding figure from a cash flow statement.
-    Returns the dollar amount (in native currency units, e.g. millions) or None.
-    """
-    import json as _json
-    import re as _re
-    prompt = f"""You are a financial data extraction specialist. From the cash flow statement text below (fiscal year {report_year}), extract the cash paid for taxes related to net share settlement of equity awards / RSU vesting tax withholdings.
-
-This line item appears under Financing Activities and may be labeled:
-- "Taxes related to net share settlement of equity awards"
-- "Tax withholding payments on vesting of restricted stock units"
-- "Payment of taxes related to net share settlement"
-- "Taxes paid related to net share settlement of equity awards"
-- "Repurchases of common stock for tax withholding"
-- Any similar description of the company paying employee taxes on RSU vesting
-
-Return ONLY valid JSON, no explanation:
-{{"found": true, "amount": <number as reported, e.g. 1234 if in millions>, "unit": "millions" or "thousands" or "billions", "line_label": "<exact label from filing>", "fiscal_year": "{report_year}"}}
-
-If not found:
-{{"found": false, "amount": null, "unit": null, "line_label": null, "fiscal_year": "{report_year}"}}
-
-CASH FLOW STATEMENT:
-{cf_text[:12000]}"""
-    try:
-        result = _call_nvidia([{"role": "user", "content": prompt}], api_key, max_tokens=300)
-        m = _re.search(r'\{[^{}]+\}', result, _re.DOTALL)
-        if not m:
-            return None
-        data = _json.loads(m.group(0))
-        if not data.get("found") or data.get("amount") is None:
-            return None
-        amount = float(data["amount"])
-        unit   = (data.get("unit") or "millions").lower()
-        if   "billion" in unit: amount *= 1e9
-        elif "million" in unit: amount *= 1e6
-        elif "thousand" in unit: amount *= 1e3
-        return abs(amount)   # always positive — it's a cash outflow
-    except Exception:
-        return None
-
-
-def fetch_rsu_tax_history(ticker, api_key, n=10):
-    """
-    Pull last n 10-K/20-F filings from EDGAR, extract cash flow sections,
-    then use NVIDIA AI to parse RSU tax withholding for each year.
-    Returns dict: {fiscal_year_str: amount_in_native_units}
+    Fetch RSU tax withholding history directly from EDGAR's XBRL structured data API.
+    Uses the concept PaymentsRelatedToTaxWithholdingForShareBasedCompensation.
+    Returns dict: {fiscal_year_str: amount_in_dollars}
     """
     cik = edgar_get_cik(ticker)
     if not cik:
         return {}
-    results = {}
-    for form in ("10-K", "20-F"):
-        filings = edgar_list_filings(cik, form, n)
-        if filings:
-            for acc, filing_date, report_year in filings:
-                cf_text = edgar_fetch_cashflow_section(cik, acc)
-                if cf_text:
-                    amount = extract_rsu_tax_nvidia(cf_text, report_year, api_key)
-                    if amount is not None:
-                        results[report_year] = amount
-            break   # found the right form type, don't try 20-F as well
-    return results
+    try:
+        hdrs = {"User-Agent": "compounder-app research@example.com"}
+        url  = f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik}.json"
+        r    = requests.get(url, headers=hdrs, timeout=30)
+        r.raise_for_status()
+        us_gaap  = r.json().get("facts", {}).get("us-gaap", {})
+        concept  = us_gaap.get("PaymentsRelatedToTaxWithholdingForShareBasedCompensation", {})
+        entries  = concept.get("units", {}).get("USD", [])
+        results  = {}
+        filed_at = {}   # track most-recent filing per year to deduplicate amendments
+        for e in entries:
+            if e.get("form") not in ("10-K", "20-F", "10-K/A", "20-F/A"):
+                continue
+            end_date = e.get("end", "")
+            year     = end_date[:4] if end_date else None
+            val      = e.get("val")
+            filed    = e.get("filed", "")
+            if year and val is not None:
+                # Keep the value from the most recently filed version for that year
+                if year not in filed_at or filed > filed_at[year]:
+                    results[year]  = abs(float(val))
+                    filed_at[year] = filed
+        return results
+    except Exception:
+        return {}
 
 
 def edgar_fetch_filing_text(cik, accession_no_dashes, max_chars=80000):
@@ -2241,56 +2115,28 @@ else:
         _rc1, _rc2 = st.columns([2, 5])
         with _rc1:
             _fetch_btn = st.button(
-                "Fetch RSU Tax from SEC Filings",
+                "Fetch RSU Tax from SEC (XBRL)",
                 disabled=_has_suffix,
-                help="Parses last 10 annual 10-K filings from EDGAR using AI to extract RSU tax withholding figures. US-listed tickers only." if not _has_suffix else "SEC EDGAR only covers US-listed tickers.",
+                help="Pulls RSU tax withholding directly from EDGAR's structured XBRL data. Instant, no AI needed. US-listed tickers only." if not _has_suffix else "SEC EDGAR only covers US-listed tickers.",
             )
         with _rc2:
             if _has_suffix:
                 st.markdown('<span style="font-size:0.72rem;color:#999">SEC EDGAR not available for non-US tickers.</span>', unsafe_allow_html=True)
             elif sec_rsu:
                 years_found = sorted(sec_rsu.keys())
-                st.markdown(f'<span style="font-size:0.72rem;color:{C_UP}">SEC data loaded for: {", ".join(years_found)}</span>', unsafe_allow_html=True)
+                st.markdown(f'<span style="font-size:0.72rem;color:{C_UP}">XBRL data loaded for: {", ".join(years_found)}</span>', unsafe_allow_html=True)
             else:
-                st.markdown('<span style="font-size:0.72rem;color:#999">RSU tax withholdings not yet fetched — click to parse last 10 annual reports via AI.</span>', unsafe_allow_html=True)
+                st.markdown('<span style="font-size:0.72rem;color:#999">RSU tax withholdings not yet fetched — click to pull from EDGAR XBRL data.</span>', unsafe_allow_html=True)
 
         if _fetch_btn:
-            _api_key = st.secrets.get("NVIDIA_API_KEY", "")
-            if not _api_key:
-                st.error("NVIDIA_API_KEY not configured in Streamlit secrets.")
+            with st.spinner("Fetching XBRL data from EDGAR..."):
+                _fetched = fetch_rsu_tax_xbrl(ticker)
+            st.session_state[rsu_cache_key] = _fetched
+            if _fetched:
+                st.success(f"Found RSU tax data for {len(_fetched)} years: {', '.join(sorted(_fetched.keys()))}")
             else:
-                _prog = st.progress(0, text="Looking up CIK on EDGAR...")
-                _cik  = edgar_get_cik(ticker)
-                if not _cik:
-                    st.warning(f"Could not find SEC CIK for {ticker}. This ticker may not be US-listed.")
-                else:
-                    _form_found = None
-                    for _form in ("10-K", "20-F"):
-                        _filings = edgar_list_filings(_cik, _form, 10)
-                        if _filings:
-                            _form_found = _form
-                            break
-                    if not _filings:
-                        st.warning("No 10-K or 20-F filings found on EDGAR.")
-                    else:
-                        _fetched = {}
-                        for _idx, (_acc, _fdate, _ryear) in enumerate(_filings):
-                            _prog.progress(
-                                int((_idx) / len(_filings) * 100),
-                                text=f"Parsing {_form_found} for fiscal year {_ryear} ({_idx+1}/{len(_filings)})..."
-                            )
-                            _cf_text = edgar_fetch_cashflow_section(_cik, _acc)
-                            if _cf_text:
-                                _amt = extract_rsu_tax_nvidia(_cf_text, _ryear, _api_key)
-                                if _amt is not None:
-                                    _fetched[_ryear] = _amt
-                        _prog.progress(100, text="Done.")
-                        st.session_state[rsu_cache_key] = _fetched
-                        if _fetched:
-                            st.success(f"Found RSU tax data for {len(_fetched)} years: {', '.join(sorted(_fetched.keys()))}")
-                        else:
-                            st.warning("AI could not find RSU tax withholding line items in the filings. This company may not report it separately.")
-                        st.rerun()
+                st.warning("No RSU tax withholding data found on EDGAR. This company may not report it as a separate XBRL concept, or may not be US-listed.")
+            st.rerun()
 
         st.markdown("<br>", unsafe_allow_html=True)
 
@@ -2377,7 +2223,7 @@ else:
             if not has_rsu and not sec_rsu:
                 st.markdown(
                     '<div style="font-size:0.72rem;color:#999;margin-top:-0.5rem">'
-                    'RSU tax withholding not in ROIC data — use "Fetch RSU Tax from SEC Filings" above to parse it from the annual reports.'
+                    'RSU tax withholding not in ROIC data — use "Fetch RSU Tax from SEC (XBRL)" above to load it from EDGAR.'
                     '</div>', unsafe_allow_html=True)
         else:
             st.markdown('<span style="color:#999;font-size:0.82rem">SBC and buyback data not available for this ticker.</span>', unsafe_allow_html=True)
