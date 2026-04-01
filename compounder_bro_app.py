@@ -303,6 +303,34 @@ def fetch_fundamental(endpoint, ticker):
         return pd.DataFrame()
 
 @st.cache_data(ttl=3600, show_spinner=False)
+def fetch_fundamental_quarterly(endpoint, ticker):
+    """Fetch quarterly data from roic.ai."""
+    url = f"{BASE_URL}/{endpoint}/{ticker}"
+    params = {"period": "quarterly", "limit": 8, "order": "desc", "apikey": API_KEY}
+    try:
+        r = requests.get(url, params=params, timeout=15)
+        r.raise_for_status()
+        raw = r.json()
+        rows = raw if isinstance(raw, list) else raw.get("data", [])
+        if not rows:
+            return pd.DataFrame()
+        df = pd.DataFrame(rows)
+        for col in ["date", "Date", "period_end", "fiscal_year_end"]:
+            if col in df.columns:
+                df[col] = pd.to_datetime(df[col], errors="coerce")
+                df = df.rename(columns={col: "Date"})
+                break
+        skip = {"Date", "ticker", "Ticker", "period", "Period",
+                "period_label", "currency", "Currency"}
+        for col in df.columns:
+            if col not in skip:
+                df[col] = pd.to_numeric(df[col], errors="coerce")
+        df = df.sort_values("Date").reset_index(drop=True)
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+@st.cache_data(ttl=3600, show_spinner=False)
 def fetch_prices(ticker):
     """Fetch full daily price history."""
     url = f"{BASE_URL}/stock-prices/{ticker}"
@@ -1410,13 +1438,22 @@ if page == "Overview":
             if close_col:
                 latest_price = float(prices[close_col].dropna().iloc[-1])
 
-        latest_eps    = latest(eps_s)
+        # TTM EPS: sum of last 4 quarters
+        inc_q = fetch_fundamental_quarterly("fundamental/income-statement", ticker)
+        ttm_eps = None
+        if not inc_q.empty:
+            eps_q = safe(inc_q, "diluted_eps", "eps").dropna()
+            if len(eps_q) >= 4:
+                ttm_eps = float(eps_q.iloc[-4:].sum())
+            elif len(eps_q) > 0:
+                ttm_eps = float(eps_q.iloc[-len(eps_q):].sum())
+
         latest_shares = latest(shares_s)
         latest_fcf    = latest(fcf_s)
 
         def _pe():
-            if latest_price and latest_eps and latest_eps != 0:
-                return f"{latest_price / latest_eps:.1f}x"
+            if latest_price and ttm_eps and ttm_eps != 0:
+                return f"{latest_price / ttm_eps:.1f}x"
             return "—"
 
         def _fcf_yield():
