@@ -1632,6 +1632,13 @@ else:
     fcf_s = align(safe(cf, "cf_free_cash_flow") if n_cf else pd.Series(dtype=float), n)
     cfo_s = align(safe(cf, "cf_cash_from_oper") if n_cf else pd.Series(dtype=float), n)
 
+    # SBC-related cash flow series (for Owners' Earnings tab)
+    _cf = lambda *cols: align(safe(cf, *cols) if n_cf else pd.Series(dtype=float), n)
+    sbc_s      = _cf("cf_stock_based_comp", "cf_stock_compensation", "cf_sbc", "stock_based_compensation")
+    buybacks_s = _cf("cf_repurchase_of_common_stock", "cf_common_stock_repurchased", "cf_buybacks", "cf_repurchases")
+    rsu_tax_s  = _cf("cf_taxes_related_to_net_share_settlement", "cf_taxes_net_share_settlement",
+                     "cf_payment_for_taxes_net_share_settlement", "cf_employee_withholding_taxes")
+
     # Balance sheet series — use bs_years for working capital, align to n for valuation
     bs_years = bs["Date"].dt.year.astype(str).tolist() if not bs.empty and "Date" in bs.columns else years
     n_bs  = len(bs) if not bs.empty else 0
@@ -1674,7 +1681,7 @@ else:
     st.markdown("<br>", unsafe_allow_html=True)
 
     # ── Tabs — no emojis ──────────────────────────────────────────────────────
-    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["Revenue", "Margins", "Cash Flow", "Valuation", "Working Capital", "Research Report"])
+    tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs(["Revenue", "Margins", "Cash Flow", "Valuation", "Working Capital", "Owners' Earnings", "Research Report"])
 
     # TAB 1 — Revenue
     with tab1:
@@ -1982,8 +1989,217 @@ else:
         }).set_index("Metric")
         st.dataframe(wc_display, use_container_width=True)
 
-    # TAB 6 — Research Report
+    # TAB 6 — Owners' Earnings
     with tab6:
+
+        # ── Helpers ────────────────────────────────────────────────────────────
+        def _v(s, i):
+            """Safe scalar from series at index i."""
+            try:
+                v = s.iloc[i]
+                return float(v) if pd.notna(v) else None
+            except:
+                return None
+
+        def _absv(s, i):
+            """Absolute value of scalar — buybacks/RSU tax stored as negative."""
+            v = _v(s, i)
+            return abs(v) if v is not None else None
+
+        # ── Annual dilution rate (shares outstanding YoY change) ───────────────
+        sh_list  = shares_s.tolist()
+        dil_list = []   # % change in shares YoY — positive = dilution
+        for i in range(len(sh_list)):
+            if i == 0:
+                dil_list.append(None)
+            else:
+                s0 = sh_list[i-1]; s1 = sh_list[i]
+                if s0 and s1 and not pd.isna(s0) and not pd.isna(s1) and s0 != 0:
+                    dil_list.append((s1 - s0) / abs(s0) * 100)
+                else:
+                    dil_list.append(None)
+
+        # ── Owners' Earnings year by year ─────────────────────────────────────
+        # Formula: Net Income + GAAP SBC (add back non-cash deduction)
+        #          − abs(Buybacks) − abs(RSU tax withholdings)
+        oe_list   = []
+        ni_list   = ni_s.tolist()
+        for i in range(len(years)):
+            ni  = _v(ni_s, i)
+            sbc = _v(sbc_s, i)
+            bb  = _absv(buybacks_s, i)
+            rst = _absv(rsu_tax_s, i)
+            if ni is None:
+                oe_list.append(None)
+                continue
+            oe = ni
+            if sbc is not None: oe += abs(sbc)   # remove non-cash GAAP SBC deduction
+            if bb  is not None: oe -= bb           # true buyback cost
+            if rst is not None: oe -= rst          # RSU tax withholdings
+            oe_list.append(oe)
+
+        # ── KPI row ────────────────────────────────────────────────────────────
+        latest_oe  = next((v for v in reversed(oe_list)  if v is not None), None)
+        latest_ni  = next((v for v in reversed(ni_list)  if v is not None), None)
+        latest_dil = next((v for v in reversed(dil_list) if v is not None), None)
+        latest_sbc = next((_v(sbc_s, i) for i in range(len(years)-1, -1, -1) if _v(sbc_s, i) is not None), None)
+        latest_bb  = next((_absv(buybacks_s, i) for i in range(len(years)-1, -1, -1) if _absv(buybacks_s, i) is not None), None)
+
+        oe_pct_gaap = (latest_oe / latest_ni * 100) if (latest_oe and latest_ni and latest_ni != 0) else None
+
+        st.markdown(
+            '<div style="font-size:0.78rem;color:#777;line-height:1.7;margin-bottom:1.2rem;max-width:780px">'
+            'Owners\' Earnings adjusts GAAP net income for the <em>true</em> economic cost of stock-based compensation. '
+            'GAAP adds back SBC as a non-cash item in operating cash flow — but the real cost is the cash spent on '
+            'buybacks to prevent dilution, plus RSU tax withholding payments buried in financing activities. '
+            'Formula: <strong>Net Income + GAAP SBC − Buybacks − RSU Tax Withholdings</strong>.'
+            '</div>', unsafe_allow_html=True)
+
+        ek1, ek2, ek3, ek4 = st.columns(4)
+
+        def oe_kpi(col, label, val, sub=None, highlight=False):
+            color = "#111" if not highlight else (C_UP if (val or "").startswith("+") or (val or "") not in ["—", ""] else C_DOWN)
+            col.markdown(f"""
+            <div class="metric-block">
+                <div class="metric-label">{label}</div>
+                <div class="metric-value" style="color:{color}">{val or "—"}</div>
+                {"" if not sub else f'<div style="font-size:0.68rem;color:#999;margin-top:2px">{sub}</div>'}
+            </div>""", unsafe_allow_html=True)
+
+        oe_kpi(ek1, "Owners' Earnings", fmt_currency(latest_oe, ccy), "latest year")
+        oe_kpi(ek2, "OE as % of GAAP NI", f"{oe_pct_gaap:.0f}%" if oe_pct_gaap else "—", "latest year")
+        oe_kpi(ek3, "Annual Dilution",
+               (f"+{latest_dil:.2f}%" if latest_dil and latest_dil >= 0 else f"{latest_dil:.2f}%") if latest_dil is not None else "—",
+               "YoY share count change")
+        oe_kpi(ek4, "Buybacks (latest yr)", fmt_currency(latest_bb, ccy), "cash spent on repurchases")
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # ── Section 1: Share Dilution ──────────────────────────────────────────
+        st.markdown('<span class="section-label">Share Dilution</span>', unsafe_allow_html=True)
+        c1, c2 = st.columns(2, gap="large")
+        with c1:
+            sh_b = [v/1e6 if v and not pd.isna(v) else None for v in sh_list]
+            fig_sh = make_bar(years, sh_b, "Shares Outstanding  (M)", height=260, color="#555555")
+            fig_sh.update_layout(yaxis=dict(ticksuffix="M", showgrid=True, gridcolor=C_BORDER2,
+                                            tickfont=dict(size=10, color=C_TEXT3), zeroline=False))
+            st.plotly_chart(fig_sh, use_container_width=True, config={"displayModeBar": False})
+        with c2:
+            dil_colors = [C_DOWN if (v or 0) > 0 else C_UP for v in dil_list]
+            fig_dil = go.Figure(go.Bar(
+                x=years, y=dil_list,
+                marker_color=dil_colors,
+                marker_line_width=0,
+                hovertemplate="%{x}: %{y:.2f}%<extra></extra>",
+            ))
+            fig_dil.update_layout(**CHART_BASE)
+            fig_dil.update_layout(height=260, title_text="Annual Dilution Rate  (%)",
+                yaxis=dict(ticksuffix="%", showgrid=True, gridcolor=C_BORDER2,
+                           tickfont=dict(size=10, color=C_TEXT3), zeroline=True, zerolinecolor=C_BORDER))
+            st.plotly_chart(fig_dil, use_container_width=True, config={"displayModeBar": False})
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # ── Section 2: SBC Cost Analysis ──────────────────────────────────────
+        st.markdown('<span class="section-label">SBC Cost Analysis</span>', unsafe_allow_html=True)
+
+        sbc_b  = [abs(_v(sbc_s, i))/1e9       if _v(sbc_s, i)       is not None else None for i in range(len(years))]
+        bb_b   = [_absv(buybacks_s, i)/1e9     if _absv(buybacks_s, i) is not None else None for i in range(len(years))]
+        rst_b  = [_absv(rsu_tax_s, i)/1e9      if _absv(rsu_tax_s, i)  is not None else None for i in range(len(years))]
+        true_sbc_b = [
+            (bb or 0) + (rst or 0) if (bb is not None or rst is not None) else None
+            for bb, rst in zip(bb_b, rst_b)
+        ]
+
+        has_sbc      = any(v is not None for v in sbc_b)
+        has_buybacks = any(v is not None for v in bb_b)
+        has_rsu      = any(v is not None for v in rst_b)
+
+        if has_sbc or has_buybacks:
+            sbc_traces = []
+            if has_sbc:
+                sbc_traces.append(go.Bar(name="GAAP SBC Expense", x=years, y=sbc_b,
+                                         marker_color="#AAAAAA", marker_line_width=0,
+                                         hovertemplate="%{x}: " + ccy + "%{y:.2f}B<extra></extra>"))
+            if has_buybacks:
+                sbc_traces.append(go.Bar(name="Buybacks", x=years, y=bb_b,
+                                         marker_color=C_DOWN, marker_line_width=0,
+                                         hovertemplate="%{x}: " + ccy + "%{y:.2f}B<extra></extra>"))
+            if has_rsu:
+                sbc_traces.append(go.Bar(name="RSU Tax Withholdings", x=years, y=rst_b,
+                                         marker_color="#8B1A1A", marker_line_width=0,
+                                         hovertemplate="%{x}: " + ccy + "%{y:.2f}B<extra></extra>"))
+            fig_sbc = go.Figure(data=sbc_traces)
+            fig_sbc.update_layout(**CHART_BASE)
+            fig_sbc.update_layout(
+                height=300, barmode="group",
+                title_text="GAAP SBC vs True SBC Cost  ($B)",
+                legend=dict(orientation="h", y=1.08, x=0, font=dict(size=10)),
+                yaxis=dict(tickprefix=ccy, ticksuffix="B", showgrid=True, gridcolor=C_BORDER2,
+                           tickfont=dict(size=10, color=C_TEXT3), zeroline=False),
+            )
+            st.plotly_chart(fig_sbc, use_container_width=True, config={"displayModeBar": False})
+            if not has_rsu:
+                st.markdown(
+                    '<div style="font-size:0.72rem;color:#999;margin-top:-0.5rem">'
+                    'RSU tax withholding data not available from API — True SBC Cost = Buybacks only. '
+                    'Full cost also includes RSU-vesting tax payments in financing activities (per FASB ASU 2016-09).'
+                    '</div>', unsafe_allow_html=True)
+        else:
+            st.markdown('<span style="color:#999;font-size:0.82rem">SBC and buyback data not available for this ticker.</span>', unsafe_allow_html=True)
+
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # ── Section 3: Owners' Earnings ────────────────────────────────────────
+        st.markdown('<span class="section-label">Owners\' Earnings vs GAAP Net Income</span>', unsafe_allow_html=True)
+
+        ni_b_list  = [v/1e9 if v is not None and not pd.isna(v) else None for v in ni_list]
+        oe_b_list  = [v/1e9 if v is not None else None for v in oe_list]
+
+        if any(v is not None for v in oe_list):
+            oe_series = [ni_b_list, oe_b_list]
+            oe_names  = ["GAAP Net Income", "Owners' Earnings"]
+            fig_oe = make_line(years, oe_series, oe_names, f"Owners' Earnings vs Net Income  ({ccy_code}, B)", height=320)
+            fig_oe.update_layout(yaxis=dict(tickprefix=ccy, ticksuffix="B", showgrid=True,
+                                            gridcolor=C_BORDER2, tickfont=dict(size=10, color=C_TEXT3),
+                                            zeroline=True, zerolinecolor=C_BORDER, showline=False))
+            st.plotly_chart(fig_oe, use_container_width=True, config={"displayModeBar": False})
+
+        # ── Historical table ────────────────────────────────────────────────────
+        st.markdown("<br>", unsafe_allow_html=True)
+        st.markdown('<span class="section-label">Historical Breakdown</span>', unsafe_allow_html=True)
+
+        def _fmt_b(v):
+            if v is None: return "—"
+            return f"{ccy}{v/1e9:.2f}B"
+
+        def _fmt_pct(v):
+            if v is None: return "—"
+            sign = "+" if v >= 0 else ""
+            return f"{sign}{v:.1f}%"
+
+        oe_rows = {
+            "Net Income (GAAP)":        [_fmt_b(_v(ni_s, i))         for i in range(len(years))],
+            "GAAP SBC (add back)":      [_fmt_b(abs(_v(sbc_s,i))) if _v(sbc_s,i) is not None else "—" for i in range(len(years))],
+            "Buybacks":                 [_fmt_b(-_absv(buybacks_s,i)) if _absv(buybacks_s,i) is not None else "—" for i in range(len(years))],
+            "RSU Tax Withholdings":     [_fmt_b(-_absv(rsu_tax_s,i)) if _absv(rsu_tax_s,i) is not None else "n/a" for i in range(len(years))],
+            "Owners' Earnings":         [_fmt_b(oe_list[i])           for i in range(len(years))],
+            "OE as % of GAAP NI":       [
+                (f"{oe_list[i]/ni_list[i]*100:.0f}%"
+                 if (oe_list[i] is not None and ni_list[i] and not pd.isna(ni_list[i]) and ni_list[i] != 0)
+                 else "—")
+                for i in range(len(years))
+            ],
+            "Annual Dilution":          [_fmt_pct(dil_list[i])        for i in range(len(years))],
+        }
+
+        oe_display = pd.DataFrame({"Metric": list(oe_rows.keys()),
+                                   **{years[i]: [oe_rows[m][i] for m in oe_rows] for i in range(len(years))}
+                                   }).set_index("Metric")
+        st.dataframe(oe_display, use_container_width=True)
+
+    # TAB 7 — Research Report
+    with tab7:
         st.markdown('<div style="font-size:0.82rem;color:#555;margin-bottom:1.5rem;line-height:1.6">'
                     'Generates a comprehensive equity research report in the style of a Berkshire Hathaway analyst. '
                     'Uses the last 20 years of financial statements, last 4 earnings call transcripts, and web research. '
