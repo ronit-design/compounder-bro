@@ -721,8 +721,18 @@ def edgar_fetch_item8_notes(cik, accession_no_dashes, max_chars=14000):
         if not r_doc.ok:
             return None
 
-        text = _re.sub(r"<[^>]{1,200}>", " ", r_doc.text)
-        text = text.replace("&nbsp;", " ").replace("&amp;", "&").replace("&#160;", " ")
+        # lxml is far faster than regex on 50-80 MB HTML filings.
+        # separator=' ' inserts a space between inline elements so words don't run together.
+        try:
+            from lxml import etree
+            root = etree.fromstring(r_doc.content, parser=etree.HTMLParser())
+            text = " ".join(root.itertext(with_tail=True))
+        except Exception:
+            # Graceful fallback if lxml is unavailable
+            text = _re.sub(r"<[^>]{1,200}>", " ", r_doc.text)
+        del r_doc  # release the large response object immediately
+
+        text = text.replace("\xa0", " ").replace("&amp;", "&")
         text = _re.sub(r"\s{3,}", "\n\n", text).strip()
 
         # Isolate Item 8
@@ -804,6 +814,62 @@ NOTES (FY{fiscal_year}):
         return _json.loads(m.group(0)) if m else {}
     except Exception:
         return {}
+
+
+def _fetch_notes_concurrent(cik: str, filings: list) -> dict:
+    """
+    Fetch Item 8 HTML notes for up to 5 annual filings in parallel.
+
+    `edgar_fetch_item8_notes` is cached, so concurrent calls never double-fetch.
+    ThreadPoolExecutor is safe inside Streamlit's thread model.
+
+    Returns: {fiscal_year_str: notes_text_or_None}
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def _fetch_one(args):
+        acc, fdate, yr = args
+        return yr, edgar_fetch_item8_notes(cik, acc)
+
+    results: dict[str, str | None] = {}
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        futures = {pool.submit(_fetch_one, f): f for f in filings}
+        for fut in as_completed(futures):
+            try:
+                yr, text = fut.result()
+                results[yr] = text
+            except Exception:
+                _, _, yr = futures[fut]
+                results[yr] = None
+    return results
+
+
+def _extract_signals_concurrent(notes_raw: dict, company: str, api_key: str) -> dict:
+    """
+    Run Pass 1 (forensic signal extraction) for all years in parallel.
+
+    Each call is independently cached by `forensic_notes_extract`, so
+    re-runs within the same session are free.
+
+    Returns: {fiscal_year_str: signals_dict}
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def _extract_one(args):
+        yr, ntxt = args
+        return yr, (forensic_notes_extract(ntxt, yr, company, api_key) if ntxt else {})
+
+    results: dict[str, dict] = {}
+    with ThreadPoolExecutor(max_workers=5) as pool:
+        futures = {pool.submit(_extract_one, item): item for item in notes_raw.items()}
+        for fut in as_completed(futures):
+            try:
+                yr, signals = fut.result()
+                results[yr] = signals
+            except Exception:
+                yr, _ = futures[fut]
+                results[yr] = {}
+    return results
 
 
 def build_forensic_dataset(xbrl, years, bs_years,
@@ -1219,9 +1285,16 @@ def edgar_fetch_filing_text(cik, accession_no_dashes, max_chars=80000):
         if not r_doc.ok:
             return None
 
-        # Clean HTML to text
-        text = _re.sub(r"<[^>]{1,200}>", " ", r_doc.text)
-        text = text.replace("&nbsp;", " ").replace("&amp;", "&").replace("&#160;", " ")
+        # lxml is far faster than regex on 50-80 MB HTML filings.
+        try:
+            from lxml import etree
+            root = etree.fromstring(r_doc.content, parser=etree.HTMLParser())
+            text = " ".join(root.itertext(with_tail=True))
+        except Exception:
+            text = _re.sub(r"<[^>]{1,200}>", " ", r_doc.text)
+        del r_doc  # release the large response object immediately
+
+        text = text.replace("\xa0", " ").replace("&amp;", "&")
         text = _re.sub(r"\s{3,}", "\n\n", text).strip()
 
         # Extract Item 1 (Business) and Item 7 (MD&A)
@@ -1680,19 +1753,42 @@ def build_report_pdf(company, ticker, report_text, transcripts, chart_figs=None)
         s_disc))
     story.append(hr())
 
-    # ── Helper: render a plotly figure as an image ────────────────────────────
-    def add_chart(fig, title, width_cm=16):
+    # ── Pre-render all chart PNGs concurrently ────────────────────────────────
+    # Kaleido spins up a headless Chromium process; doing N charts sequentially
+    # means N serial process launches. ThreadPoolExecutor overlaps the I/O wait.
+    import plotly.io as pio
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    def _render_one(args):
+        """Render a single (title, fig) tuple to PNG bytes. Thread-safe."""
+        idx, (title, fig) = args
         try:
-            import plotly.io as pio
             img_bytes = pio.to_image(fig, format="png", width=900, height=380,
-                                      scale=2, engine="kaleido")
-            img_buf = io.BytesIO(img_bytes)
-            img_w   = width_cm * cm
-            img_h   = img_w * (380 / 900)
-            story.append(RLImage(img_buf, width=img_w, height=img_h))
-            story.append(Paragraph(title, s_caption))
+                                     scale=2, engine="kaleido")
+            return idx, img_bytes
         except Exception:
-            pass  # skip chart silently if kaleido not available
+            return idx, None
+
+    # Pre-render: {chart_index: png_bytes_or_None}
+    _pre_rendered: dict[int, bytes | None] = {}
+    if chart_figs:
+        with ThreadPoolExecutor(max_workers=3) as _pool:
+            _futures = {_pool.submit(_render_one, item): item
+                        for item in enumerate(chart_figs)}
+            for _fut in as_completed(_futures):
+                _idx, _img = _fut.result()
+                _pre_rendered[_idx] = _img
+
+    def add_chart(fig, title, width_cm=16, _chart_idx=None):
+        """Insert a pre-rendered PNG into the PDF story (no Kaleido call here)."""
+        img_bytes = _pre_rendered.get(_chart_idx) if _chart_idx is not None else None
+        if img_bytes is None:
+            return  # skip silently if rendering failed
+        img_buf = io.BytesIO(img_bytes)
+        img_w   = width_cm * cm
+        img_h   = img_w * (380 / 900)
+        story.append(RLImage(img_buf, width=img_w, height=img_h))
+        story.append(Paragraph(title, s_caption))
 
     # ── Parse and render report sections ─────────────────────────────────────
     # Match headings like:
@@ -1749,18 +1845,18 @@ def build_report_pdf(company, ticker, report_text, transcripts, chart_figs=None)
             if chart_idx < len(chart_figs):
                 c_title, c_fig = chart_figs[chart_idx]
                 story.append(Spacer(1, 4*mm))
-                add_chart(c_fig, c_title)
+                add_chart(c_fig, c_title, _chart_idx=chart_idx)
 
         i += 2
 
     # ── All remaining charts appended after final section ────────────────────
     placed = set(SECTION_CHART_MAP.values())
-    remaining = [(t, f) for idx, (t, f) in enumerate(chart_figs or []) if idx not in placed]
+    remaining = [(idx, t, f) for idx, (t, f) in enumerate(chart_figs or []) if idx not in placed]
     if remaining:
         story.append(hr(before=6, after=4))
         story.append(Paragraph("FINANCIAL CHARTS", s_sec))
-        for c_title, c_fig in remaining:
-            add_chart(c_fig, c_title)
+        for c_idx, c_title, c_fig in remaining:
+            add_chart(c_fig, c_title, _chart_idx=c_idx)
 
     # ── Footer ────────────────────────────────────────────────────────────────
     story.append(Spacer(1, 1*cm))
@@ -2511,46 +2607,41 @@ else:
     # TAB 5 — Working Capital
     with tab5:
 
-        def days(numerator_s, denominator_s, label):
-            """Calculate a days metric year by year. Returns list aligned to bs_years."""
-            result = []
-            for i in range(len(bs_years)):
-                try:
-                    num = float(numerator_s.iloc[i])   if i < len(numerator_s)   and pd.notna(numerator_s.iloc[i])   else None
-                    den = float(denominator_s.iloc[i]) if i < len(denominator_s) and pd.notna(denominator_s.iloc[i]) else None
-                    if num is not None and den is not None and den > 0:
-                        result.append((num / den) * 365)
-                    else:
-                        result.append(None)
-                except:
-                    result.append(None)
+        def days(numerator_s, denominator_s):
+            """Vectorised days metric: (numerator / denominator) × 365.
+            Returns a pandas Series aligned to bs_years, NaN where data is missing."""
+            n = pd.to_numeric(numerator_s,   errors="coerce").reset_index(drop=True)
+            d = pd.to_numeric(denominator_s, errors="coerce").reset_index(drop=True)
+            # Align to the shorter of the two (bs_years length)
+            n = n.iloc[:len(bs_years)]
+            d = d.iloc[:len(bs_years)]
+            result = (n / d.where(d > 0)) * 365
             return result
 
-        dso_list  = days(ar_s,  rev_s,  "DSO")
-        inv_list  = days(inv_s, cogs_s, "Inventory Days")
-        dpo_list  = days(ap_s,  cogs_s, "DPO")
+        dso_s  = days(ar_s,  rev_s)
+        inv_s_ = days(inv_s, cogs_s)   # renamed locally to avoid shadowing inv_s
+        dpo_s  = days(ap_s,  cogs_s)
 
-        # CCC — only where all three components exist
-        ccc_list = []
-        for i in range(len(bs_years)):
-            dso = dso_list[i]; inv = inv_list[i]; dpo = dpo_list[i]
-            if dso is not None and inv is not None and dpo is not None:
-                ccc_list.append(dso + inv - dpo)
-            elif dso is not None and dpo is not None:
-                # Some companies have no inventory (service businesses)
-                ccc_list.append(dso - dpo)
-            else:
-                ccc_list.append(None)
+        # CCC — DSO + Inventory Days − DPO; service companies with no inventory use DSO − DPO
+        ccc_full   = (dso_s + inv_s_ - dpo_s)          # all three components
+        ccc_no_inv = (dso_s - dpo_s)                    # service business fallback
+        ccc_s      = ccc_full.where(inv_s_.notna(), ccc_no_inv)  # pick by inv availability
+        ccc_s      = ccc_s.where(dso_s.notna() & dpo_s.notna())  # require at least DSO+DPO
 
-        # NWC — year by year
-        nwc_list = []
-        for i in range(len(bs_years)):
-            try:
-                ca = float(ca_s.iloc[i]) if i < len(ca_s) and pd.notna(ca_s.iloc[i]) else None
-                cl = float(cl_s.iloc[i]) if i < len(cl_s) and pd.notna(cl_s.iloc[i]) else None
-                nwc_list.append(ca - cl if ca is not None and cl is not None else None)
-            except:
-                nwc_list.append(None)
+        # NWC — current assets minus current liabilities
+        ca = pd.to_numeric(ca_s, errors="coerce").reset_index(drop=True).iloc[:len(bs_years)]
+        cl = pd.to_numeric(cl_s, errors="coerce").reset_index(drop=True).iloc[:len(bs_years)]
+        nwc_s = (ca - cl).where(ca.notna() & cl.notna())
+
+        # Convert to plain Python lists (Plotly-safe; NaN → None)
+        def _to_list(s):
+            return [None if pd.isna(v) else float(v) for v in s]
+
+        dso_list  = _to_list(dso_s)
+        inv_list  = _to_list(inv_s_)
+        dpo_list  = _to_list(dpo_s)
+        ccc_list  = _to_list(ccc_s)
+        nwc_list  = _to_list(nwc_s)
 
         # ── KPI summary row — latest year ──────────────────────────────────────
         def latest_days(lst):
@@ -2663,52 +2754,55 @@ else:
             v = _v(s, i)
             return abs(v) if v is not None else None
 
-        # ── Annual dilution rate (shares outstanding YoY change) ───────────────
-        sh_list  = shares_s.tolist()
-        dil_list = []   # % change in shares YoY — positive = dilution
-        for i in range(len(sh_list)):
-            if i == 0:
-                dil_list.append(None)
-            else:
-                s0 = sh_list[i-1]; s1 = sh_list[i]
-                if s0 and s1 and not pd.isna(s0) and not pd.isna(s1) and s0 != 0:
-                    dil_list.append((s1 - s0) / abs(s0) * 100)
-                else:
-                    dil_list.append(None)
+        # ── Annual dilution rate (shares outstanding YoY % change) ───────────
+        # pct_change() naturally yields NaN for the first row and for any gap.
+        sh_s     = pd.to_numeric(shares_s, errors="coerce").reset_index(drop=True)
+        dil_list = [None] + [
+            None if pd.isna(v) else float(v)
+            for v in (sh_s.pct_change() * 100).iloc[1:]
+        ]
+        ni_list = [None if pd.isna(v) else float(v)
+                   for v in pd.to_numeric(ni_s, errors="coerce")]
 
-        # ── Net buybacks year by year ──────────────────────────────────────────
-        # Net buyback = cash spent repurchasing shares − cash received from issuances
-        # Both fields may be stored as positive or negative; use abs() to normalise.
-        net_bb_list = []
-        for i in range(len(years)):
-            decr = _absv(decr_cap_s, i)   # repurchases
-            incr = _absv(incr_cap_s, i)   # issuances
-            if decr is None and incr is None:
-                net_bb_list.append(None)
-            else:
-                net_bb_list.append((decr or 0) - (incr or 0))
+        # ── Net buybacks — vectorised ──────────────────────────────────────────
+        # abs() normalises sign convention: repurchases stored negative by some APIs
+        decr_v = pd.to_numeric(decr_cap_s, errors="coerce").abs().reset_index(drop=True)
+        incr_v = pd.to_numeric(incr_cap_s, errors="coerce").abs().reset_index(drop=True)
+        # Set to NaN only when BOTH are absent; otherwise treat missing as 0
+        both_missing = decr_v.isna() & incr_v.isna()
+        net_bb_vec   = (decr_v.fillna(0) - incr_v.fillna(0)).where(~both_missing)
+        net_bb_list  = [None if pd.isna(v) else float(v) for v in net_bb_vec]
 
-        # ── Owners' Earnings year by year ─────────────────────────────────────
-        # Formula: Net Income + GAAP SBC (add back non-cash deduction)
-        #          − Net Buybacks − RSU tax withholdings (if available)
-        oe_list   = []
-        ni_list   = ni_s.tolist()
-        for i in range(len(years)):
-            ni     = _v(ni_s, i)
-            sbc    = _v(sbc_s, i)
-            net_bb = net_bb_list[i]
-            # RSU tax: prefer SEC-parsed data, fall back to ROIC API field
-            sec_rsu_data = st.session_state.get(f"rsu_tax_{ticker}", {})
-            year_str = years[i] if i < len(years) else None
-            rst = sec_rsu_data.get(year_str) if sec_rsu_data and year_str else _absv(rsu_tax_s, i)
-            if ni is None:
-                oe_list.append(None)
-                continue
-            oe = ni
-            if sbc    is not None: oe += abs(sbc)   # remove non-cash GAAP SBC deduction
-            if net_bb is not None: oe -= net_bb      # net cost of share repurchase programme
-            if rst    is not None: oe -= rst          # RSU tax withholdings
-            oe_list.append(oe)
+        # ── Owners' Earnings — vectorised ─────────────────────────────────────
+        # Formula: Net Income + |SBC| − Net Buybacks − RSU Tax Withholdings
+        ni_vec  = pd.to_numeric(ni_s,  errors="coerce").reset_index(drop=True)
+        sbc_vec = pd.to_numeric(sbc_s, errors="coerce").abs().reset_index(drop=True)
+
+        # RSU tax: prefer SEC-parsed EDGAR data; fall back to ROIC field.
+        # Build a year-string-indexed Series from session state, then reindex to
+        # match `years` so we can do a clean combine_first against ROIC data.
+        sec_rsu_data = st.session_state.get(f"rsu_tax_{ticker}", {})
+        if sec_rsu_data:
+            rsu_sec_s = pd.Series(sec_rsu_data, dtype=float)               # index = year strings
+            rsu_sec_s.index = rsu_sec_s.index.astype(str)
+            years_idx = pd.Index([str(y) for y in years])
+            rsu_sec_aligned = rsu_sec_s.reindex(years_idx).values          # align to years order
+            rsu_sec_vec = pd.Series(rsu_sec_aligned).abs().reset_index(drop=True)
+        else:
+            rsu_sec_vec = pd.Series([None] * len(years), dtype=float)
+
+        rsu_roic_vec = pd.to_numeric(rsu_tax_s, errors="coerce").abs().reset_index(drop=True)
+        # combine_first: use SEC value where available, ROIC where SEC is NaN
+        rsu_vec = rsu_sec_vec.combine_first(rsu_roic_vec)
+
+        # Compose OE; leave NaN where net income is missing (can't compute)
+        oe_vec = (
+            ni_vec
+            + sbc_vec.fillna(0)
+            - net_bb_vec.fillna(0)
+            - rsu_vec.fillna(0)
+        ).where(ni_vec.notna())
+        oe_list = [None if pd.isna(v) else float(v) for v in oe_vec]
 
         # ── KPI row ────────────────────────────────────────────────────────────
         latest_oe     = next((v for v in reversed(oe_list)     if v is not None), None)
@@ -2947,16 +3041,18 @@ else:
                 st.session_state.pop(_fa_key, None)
 
             if _fa_key not in st.session_state:
-                # ── Total steps: XBRL(1) + notes fetch per year(5) + Pass-1 per year(5) + Pass-2(1) = 12
-                # Non-US: notes fetch and Pass-1 are skipped → 2 steps total.
-                _total_steps = 12 if not _is_non_us else 2
-                _fa_progress = st.progress(0, text="Step 1 — Fetching XBRL quantitative data…")
+                # 4-phase progress bar (concurrent I/O removes the per-year steps):
+                # Phase 1: XBRL fetch + ROIC merge
+                # Phase 2: Item 8 HTML fetch (all years in parallel)
+                # Phase 3: Pass-1 signal extraction (all years in parallel)
+                # Phase 4: Pass-2 Graham synthesis
+                _fa_progress = st.progress(0, text="Phase 1 / 4 — Fetching XBRL quantitative data…")
 
                 # ── Step 1: XBRL ────────────────────────────────────────────────────
                 # fetch_forensic_xbrl is cached (ttl 1 h), so subsequent tab switches
                 # are instant. For non-US tickers it returns {} immediately.
                 _xbrl = fetch_forensic_xbrl(ticker)
-                _fa_progress.progress(1 / _total_steps, text="Step 1 — XBRL fetched. Merging with ROIC data…")
+                _fa_progress.progress(0.12, text="Phase 1 / 4 — XBRL fetched. Merging with ROIC data…")
 
                 # ── Merge XBRL with already-loaded ROIC series (zero extra API calls) ──
                 # All series (rev_s, ni_s, oi_s, cfo_s, etc.) are already in memory
@@ -2977,45 +3073,28 @@ else:
                 )
                 _data_table = _fmt_xbrl_table(_dataset)
 
-                # ── Steps 2–11: EDGAR Item 8 notes (US tickers only) ────────────────
+                # ── Phase 2–3: EDGAR Item 8 notes (US tickers only) ─────────────────
                 _notes_summary = ""
+                _nvidia_key    = st.secrets.get("NVIDIA_API_KEY", "")
                 if not _is_non_us:
-                    _cik      = edgar_get_cik(ticker)    # cached in edgar_get_cik
-                    # Single HTTP request returns both 10-K and 20-F filings
-                    _filings  = edgar_list_annual_filings(_cik, n=5) if _cik else []
+                    _cik     = edgar_get_cik(ticker)    # cached
+                    _filings = edgar_list_annual_filings(_cik, n=5) if _cik else []
 
-                    # Steps 2–6: fetch Item 8 HTML per filing year (each call is cached)
-                    _notes_raw: dict[str, str | None] = {}
-                    for _si, (_acc, _fdate, _yr) in enumerate(_filings):
-                        _fa_progress.progress(
-                            (_si + 2) / _total_steps,
-                            text=f"Step {_si + 2} / {_total_steps} — Fetching Item 8 notes FY{_yr}…",
-                        )
-                        _notes_raw[_yr] = edgar_fetch_item8_notes(_cik, _acc)
+                    # Phase 2: fetch all 5 filings concurrently (each call is cached 24h)
+                    _fa_progress.progress(0.25, text="Phase 2 / 4 — Fetching Item 8 notes (parallel)…")
+                    _notes_raw: dict[str, str | None] = _fetch_notes_concurrent(_cik, _filings)
 
-                    # Steps 7–11: Pass 1 — one NVIDIA call per year extracts a
-                    # compact JSON of qualitative forensic signals (~700 tokens each).
-                    # This keeps each call well within the model's context window.
-                    _nvidia_key      = st.secrets.get("NVIDIA_API_KEY", "")
-                    _signals_by_year: dict[str, dict] = {}
-                    for _si, (_yr, _ntxt) in enumerate(sorted(_notes_raw.items())):
-                        _fa_progress.progress(
-                            (_si + 7) / _total_steps,
-                            text=f"Step {_si + 7} / {_total_steps} — Extracting signals FY{_yr}…",
-                        )
-                        _signals_by_year[_yr] = (
-                            forensic_notes_extract(_ntxt, _yr, company, _nvidia_key)
-                            if _ntxt else {}
-                        )
+                    # Phase 3: Pass 1 — extract forensic signals from each year concurrently
+                    _fa_progress.progress(0.55, text="Phase 3 / 4 — Extracting signals (parallel)…")
+                    _signals_by_year: dict[str, dict] = _extract_signals_concurrent(
+                        _notes_raw, company, _nvidia_key
+                    )
                     _notes_summary = _fmt_notes_signals(_signals_by_year)
-                else:
-                    # Non-US: skip notes, only quantitative analysis runs
-                    _nvidia_key = st.secrets.get("NVIDIA_API_KEY", "")
 
-                # ── Step 12 (or 2 for non-US): Pass 2 — full Graham synthesis ───────
+                # ── Phase 4: Pass 2 — full Graham synthesis ───────────────────────────
                 # The data table (~3–4 KB) + notes summary (~3 KB) fits comfortably
                 # within the model's context. One API call produces the full report.
-                _fa_progress.progress(1.0, text="Final step — Generating forensic report…")
+                _fa_progress.progress(0.85, text="Phase 4 / 4 — Generating forensic report…")
                 _forensic_text = generate_forensic_report(
                     company, ticker, _data_table, _notes_summary, _nvidia_key,
                 )
