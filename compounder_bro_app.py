@@ -611,30 +611,69 @@ def fetch_forensic_xbrl(ticker):
             return {}
 
         return {
-            "net_income":       get_annual(["NetIncomeLoss", "ProfitLoss"]),
-            "pretax_income":    get_annual(["IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest"]),
-            "tax_expense":      get_annual(["IncomeTaxExpenseBenefit"]),
-            "revenue":          get_annual(["Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax", "SalesRevenueNet"]),
-            "accounts_rec":     get_annual(["AccountsReceivableNetCurrent", "ReceivablesNetCurrent"]),
-            "cfo":              get_annual(["NetCashProvidedByUsedInOperatingActivities"]),
-            "gross_ppe":        get_annual(["PropertyPlantAndEquipmentGross", "PropertyPlantAndEquipmentNet"]),
-            "depreciation":     get_annual(["DepreciationDepletionAndAmortization", "DepreciationAndAmortization",
-                                            "Depreciation", "DepreciationAmortizationAndAccretionNet",
-                                            "DepreciationNonproduction"]),
-            "intangibles":      get_annual(["FiniteLivedIntangibleAssetsNet", "IntangibleAssetsNetExcludingGoodwill",
-                                            "FiniteLivedIntangibleAssetsGross"]),
-            "goodwill":         get_annual(["Goodwill"]),
-            "goodwill_impair":  get_annual(["GoodwillImpairmentLoss"]),
-            "interest_expense": get_annual(["InterestExpense", "InterestAndDebtExpense",
-                                            "InterestExpenseDebt", "InterestPaidNet",
-                                            "InterestCostsIncurred"]),
-            "lease_expense":    get_annual(["OperatingLeaseExpense", "LeaseCost", "OperatingLeasesRentExpenseNet",
-                                            "OperatingLeaseCost"]),
-            "long_term_debt":   get_annual(["LongTermDebt", "LongTermDebtNoncurrent"]),
-            "preferred_div":    get_annual(["DividendsPreferredStock", "PreferredStockDividendsAndOtherAdjustments"]),
-            "oci":              get_annual(["OtherComprehensiveIncomeLossNetOfTax"]),
-            "retained_earnings":get_annual(["RetainedEarningsAccumulatedDeficit"]),
-            "capitalized_sw":   get_annual(["CapitalizedComputerSoftwareNet", "CapitalizedSoftwareDevelopmentCostsForInternalUseNet"]),
+            # ── Core P&L ────────────────────────────────────────────────────────
+            "net_income":        get_annual(["NetIncomeLoss", "ProfitLoss"]),
+            "pretax_income":     get_annual(["IncomeLossFromContinuingOperationsBeforeIncomeTaxesExtraordinaryItemsNoncontrollingInterest",
+                                             "IncomeLossFromContinuingOperationsBeforeIncomeTaxesMinorityInterestAndIncomeLossFromEquityMethodInvestments"]),
+            "tax_expense":       get_annual(["IncomeTaxExpenseBenefit"]),
+            "revenue":           get_annual(["Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax", "SalesRevenueNet"]),
+            "cogs":              get_annual(["CostOfRevenue", "CostOfGoodsAndServicesSold", "CostOfGoodsSold"]),
+            "cfo":               get_annual(["NetCashProvidedByUsedInOperatingActivities"]),
+
+            # ── Nonrecurring items — needed to normalize the income account ─────
+            # Graham: strip these from operating results before averaging earnings.
+            "asset_sale_gains":  get_annual(["GainLossOnSaleOfPropertyPlantAndEquipment",
+                                             "GainLossOnDispositionOfAssets",
+                                             "GainLossOnSaleOfBusiness"]),
+            "investment_gains":  get_annual(["GainLossOnInvestments",
+                                             "GainLossOnSaleOfInvestments",
+                                             "MarketableSecuritiesGainLoss"]),
+            "debt_extinguish":   get_annual(["GainsLossesOnExtinguishmentOfDebt",
+                                             "GainLossOnRepurchaseOfDebtInstrument"]),
+
+            # ── Balance sheet — PP&E / D&A / intangibles ────────────────────────
+            "gross_ppe":         get_annual(["PropertyPlantAndEquipmentGross", "PropertyPlantAndEquipmentNet"]),
+            "depreciation":      get_annual(["DepreciationDepletionAndAmortization", "DepreciationAndAmortization",
+                                             "Depreciation", "DepreciationAmortizationAndAccretionNet",
+                                             "DepreciationNonproduction"]),
+            # Intangible amortization separate from D&A — Graham says add back
+            # purchase-accounting intangibles; keep genuine economic amortization.
+            "amort_intangibles": get_annual(["AmortizationOfIntangibleAssets",
+                                             "AmortizationOfAcquiredIntangibles",
+                                             "AmortizationOfFiniteLivedIntangibles"]),
+            "intangibles":       get_annual(["FiniteLivedIntangibleAssetsNet", "IntangibleAssetsNetExcludingGoodwill",
+                                             "FiniteLivedIntangibleAssetsGross"]),
+            "goodwill":          get_annual(["Goodwill"]),
+            "goodwill_impair":   get_annual(["GoodwillImpairmentLoss"]),
+            "capitalized_sw":    get_annual(["CapitalizedComputerSoftwareNet",
+                                             "CapitalizedSoftwareDevelopmentCostsForInternalUseNet"]),
+
+            # ── Inventory & reserves ─────────────────────────────────────────────
+            "inventory":         get_annual(["InventoryNet", "InventoryFinishedGoodsAndWorkInProcess",
+                                             "InventoryFinishedGoods"]),
+            # LIFO reserve: positive value = FIFO inventory exceeds LIFO inventory.
+            # In inflation, FIFO companies overstate earnings vs LIFO peers.
+            "lifo_reserve":      get_annual(["ExcessOfReplacementOrCurrentCostsOverStatedLIFOValue",
+                                             "LIFOInventoryAmount"]),
+            # Allowance for doubtful accounts — indicator of reserve conservatism.
+            "allow_doubtful":    get_annual(["AllowanceForDoubtfulAccountsReceivableCurrent",
+                                             "AllowanceForDoubtfulAccountsReceivableNoncurrent"]),
+
+            # ── Capital structure & fixed charges ────────────────────────────────
+            "interest_expense":  get_annual(["InterestExpense", "InterestAndDebtExpense",
+                                             "InterestExpenseDebt", "InterestPaidNet",
+                                             "InterestCostsIncurred"]),
+            "lease_expense":     get_annual(["OperatingLeaseExpense", "LeaseCost",
+                                             "OperatingLeasesRentExpenseNet", "OperatingLeaseCost"]),
+            "long_term_debt":    get_annual(["LongTermDebt", "LongTermDebtNoncurrent",
+                                             "LongTermDebtAndCapitalLeaseObligations"]),
+            "preferred_div":     get_annual(["DividendsPreferredStock",
+                                             "PreferredStockDividendsAndOtherAdjustments"]),
+
+            # ── Equity quality — buried losses & surplus manipulation ────────────
+            "oci":               get_annual(["OtherComprehensiveIncomeLossNetOfTax"]),
+            "retained_earnings": get_annual(["RetainedEarningsAccumulatedDeficit"]),
+            "accounts_rec":      get_annual(["AccountsReceivableNetCurrent", "ReceivablesNetCurrent"]),
         }
     except Exception:
         return {}
@@ -725,28 +764,42 @@ def edgar_fetch_item8_notes(cik, accession_no_dashes, max_chars=14000):
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def forensic_notes_extract(notes_text, fiscal_year, company, api_key):
-    """Pass 1: Extract structured forensic signals from a single year's notes."""
+    """
+    Pass 1: Extract structured forensic signals from a single year's Item 8 notes.
+
+    Returns compact JSON (~15 fields) covering qualitative Graham tests that
+    cannot be answered from XBRL numbers alone: inventory method, pension
+    assumptions, reserve accounting style, nonrecurring gains disclosed in
+    narrative, VIEs, auditor qualifications, and policy changes.
+
+    Capped at 11 000 chars of notes input so it fits well within the model's
+    context. max_tokens=1000 gives enough room for all fields without waste.
+    """
     import json as _json, re as _re
-    prompt = f"""You are a forensic accounting assistant. Extract ONLY the following data points from these notes to financial statements for {company} (FY{fiscal_year}). Return ONLY valid compact JSON, no explanation, no markdown fences.
+    prompt = f"""You are a forensic accounting assistant. Extract ONLY the data points below from the notes to financial statements for {company} (FY{fiscal_year}). Return ONLY valid compact JSON — no explanation, no markdown fences, no extra keys.
 
 {{
+  "inventory_method": "<LIFO, FIFO, weighted-average, or null if not disclosed>",
+  "lifo_reserve_change": "<direction and magnitude of LIFO reserve change this year, or null>",
+  "nonrecurring_gains_disclosed": "<asset sales, investment gains, or debt extinguishment gains mentioned in narrative, max 200 chars, or null>",
+  "reserve_accounting": "<nature of contingency/warranty/litigation reserves and how they are classified — Chrysler-style deduction vs vague appropriated surplus, max 200 chars, or null>",
   "vies_spvs": "<guaranteed obligations or unconsolidated VIEs/SPVs, max 200 chars, or null>",
   "pension_assumed_return_pct": <number or null>,
   "pension_discount_rate_pct": <number or null>,
-  "ppe_useful_lives": "<key asset classes with stated useful lives, max 150 chars, or null>",
+  "intangible_useful_lives": "<amortization periods for major acquired intangibles (customer relationships, patents, etc.), max 150 chars, or null>",
+  "ppe_useful_lives": "<key PP&E asset classes with stated useful lives, max 150 chars, or null>",
   "revenue_recognition_policy": "<one sentence on when/how revenue is recognized, or null>",
   "explicit_policy_changes": "<any accounting policy changes explicitly disclosed this year, or null>",
   "oci_buried_losses": "<OCI items that may represent buried operating losses, max 150 chars, or null>",
   "contingent_liabilities": "<top contingent liability descriptions, max 200 chars, or null>",
   "auditor_name": "<auditor firm name or null>",
-  "auditor_qualification": "<going concern, emphasis of matter, or null>",
-  "capitalized_costs_policy": "<capitalized software or R&D policy, or null>"
+  "auditor_qualification": "<going concern, emphasis of matter, or null>"
 }}
 
 NOTES (FY{fiscal_year}):
 {notes_text[:11000]}"""
     try:
-        raw = _call_nvidia([{"role": "user", "content": prompt}], api_key, max_tokens=700)
+        raw = _call_nvidia([{"role": "user", "content": prompt}], api_key, max_tokens=1000)
         m   = _re.search(r'\{[\s\S]*\}', raw)
         return _json.loads(m.group(0)) if m else {}
     except Exception:
@@ -754,28 +807,39 @@ NOTES (FY{fiscal_year}):
 
 
 def build_forensic_dataset(xbrl, years, bs_years,
-                            rev_s, ni_s, oi_s, cfo_s, fcf_s,
-                            ar_s, nd_s, sbc_s, incr_cap_s, decr_cap_s, rsu_tax_s):
+                            rev_s, ni_s, oi_s, cfo_s, fcf_s, cogs_s,
+                            ar_s, inv_s, nd_s,
+                            sbc_s, incr_cap_s, decr_cap_s, rsu_tax_s,
+                            price_s, shares_s):
     """
     Build a unified forensic dataset — zero extra API calls.
 
-    Merges two data sources that are already in memory:
+    Merges two sources already in memory:
       - EDGAR XBRL  : preferred for D&A, taxes, OCI, retained earnings, debt,
-                      goodwill — concepts the ROIC API does not expose.
-      - ROIC series : already fetched for every tab; used as fallback for core
-                      P&L / cash-flow metrics and to add OE / dilution data.
+                      goodwill, LIFO reserve, nonrecurring gains, allowances —
+                      concepts the ROIC API does not expose.
+      - ROIC series : already fetched for every tab; fallback for core P&L /
+                      cash flow, plus adds inventory, COGS, market cap, OE,
+                      dilution — not available in XBRL.
 
     XBRL wins when it has data; ROIC fills the gap when it doesn't.
 
+    Parameters (ROIC series):
+        years     — income-statement year labels (all IS/CF series aligned here)
+        bs_years  — balance-sheet year labels (ar_s, inv_s use these)
+        price_s   — year-end stock price, aligned to `years`
+        shares_s  — diluted shares outstanding (full count), aligned to `years`
+
     Returns: dict of {metric_key: {year_str: value_float_or_None}}
+    All dollar values stored in native USD (not millions) for consistency with
+    the $B formatter in _fmt_xbrl_table (which divides by 1e9).
     """
 
     def _to_dict(series, year_labels, n=5):
         """
         Convert a pandas Series + matching year-label list to a
-        {year_str: value} dict for the last n periods.
-        Values that are NaN / None are stored as None so the formatter
-        can print "n/a" cleanly.
+        {year_str: value} dict, keeping the last n periods.
+        NaN / None stored as None so the formatter prints "n/a" cleanly.
         """
         pairs = list(zip([str(y)[:4] for y in year_labels], series.tolist()))
         return {
@@ -784,34 +848,47 @@ def build_forensic_dataset(xbrl, years, bs_years,
         }
 
     def _merge(xbrl_data, roic_data):
-        """Use XBRL if it returned anything; fall back to ROIC."""
+        """Prefer XBRL if it has data; fall back to ROIC."""
         return xbrl_data if xbrl_data else roic_data
 
-    # ── ROIC series → year-keyed dicts ──────────────────────────────────────
-    # Income-statement and cash-flow series are aligned to `years` (length n).
+    # ── ROIC income-statement / cash-flow → year-keyed dicts ────────────────
+    # All aligned to `years`, so zip directly with that label list.
     r_rev  = _to_dict(rev_s,     years)
     r_ni   = _to_dict(ni_s,      years)
-    r_oi   = _to_dict(oi_s,      years)   # operating income — better than pre-tax for coverage tests
+    r_oi   = _to_dict(oi_s,      years)   # operating income: better for coverage ratios
     r_cfo  = _to_dict(cfo_s,     years)
     r_fcf  = _to_dict(fcf_s,     years)
+    r_cogs = _to_dict(cogs_s,    years)
     r_sbc  = _to_dict(sbc_s,     years)
     r_nd   = _to_dict(nd_s,      years)
     r_rsu  = _to_dict(rsu_tax_s, years)
 
-    # Balance-sheet series use bs_years (may differ in length from income statement)
-    r_ar   = _to_dict(ar_s, bs_years)
+    # ── ROIC balance-sheet → year-keyed dicts ───────────────────────────────
+    # BS series use bs_years (may differ in length from income statement).
+    r_ar   = _to_dict(ar_s,  bs_years)
+    r_inv  = _to_dict(inv_s, bs_years)
 
-    # Net buybacks = cash spent repurchasing shares − cash received from issuances.
-    # Both stored as positive values in ROIC; a positive result means net capital
-    # returned to shareholders.
+    # ── Market cap — needed for Graham's Stock-Value Ratio ──────────────────
+    # market_cap = price × diluted_shares (both in native units → USD).
+    # The Stock-Value Ratio test requires: market_cap / long_term_debt ≥ 1.
+    mc_vals = [
+        p * s if (pd.notna(p) and pd.notna(s) and p is not None and s is not None) else None
+        for p, s in zip(price_s.tolist(), shares_s.tolist())
+    ]
+    r_mktcap = _to_dict(pd.Series(mc_vals, dtype=float), years)
+
+    # ── Net buybacks ─────────────────────────────────────────────────────────
+    # cash spent repurchasing shares − cash received from new issuances.
+    # Positive = net capital returned; negative = net dilutive issuance.
     net_bb = [
         (abs(d) if pd.notna(d) else 0.0) - (abs(i) if pd.notna(i) else 0.0)
         for d, i in zip(decr_cap_s.tolist(), incr_cap_s.tolist())
     ]
     r_net_bb = _to_dict(pd.Series(net_bb, dtype=float), years)
 
-    # Owners' Earnings = NI + SBC − net_buybacks − RSU_tax_withholdings.
-    # This is the true cash cost of running the equity programme.
+    # ── Owners' Earnings ─────────────────────────────────────────────────────
+    # OE = NI + SBC − net_buybacks − RSU_tax_withholdings.
+    # Treats SBC as a real cash cost; shows true economic return to shareholders.
     oe_vals = []
     for yr in sorted(r_ni):
         ni_v  = r_ni.get(yr)  or 0.0
@@ -822,38 +899,60 @@ def build_forensic_dataset(xbrl, years, bs_years,
     r_oe = {yr: v for yr, v in oe_vals}
 
     return {
-        # ── XBRL preferred / ROIC fallback (core P&L + cash flow) ───────────
+        # ── Core P&L — XBRL preferred / ROIC fallback ───────────────────────
         "net_income":        _merge(xbrl.get("net_income",    {}), r_ni),
         "revenue":           _merge(xbrl.get("revenue",       {}), r_rev),
-        "accounts_rec":      _merge(xbrl.get("accounts_rec",  {}), r_ar),
+        "cogs":              _merge(xbrl.get("cogs",          {}), r_cogs),
         "cfo":               _merge(xbrl.get("cfo",           {}), r_cfo),
+        "accounts_rec":      _merge(xbrl.get("accounts_rec",  {}), r_ar),
+        "inventory":         _merge(xbrl.get("inventory",     {}), r_inv),
 
-        # ── XBRL only (not available in ROIC) ───────────────────────────────
-        # Tax data — needed for Tax-Accrual Sanity Check
+        # ── Tax data — XBRL only (Tax-Accrual Sanity Check) ─────────────────
         "pretax_income":     xbrl.get("pretax_income",    {}),
         "tax_expense":       xbrl.get("tax_expense",      {}),
-        # Balance-sheet / capital structure
-        "gross_ppe":         xbrl.get("gross_ppe",        {}),
-        "depreciation":      xbrl.get("depreciation",     {}),
-        "intangibles":       xbrl.get("intangibles",      {}),
-        "goodwill":          xbrl.get("goodwill",         {}),
-        "goodwill_impair":   xbrl.get("goodwill_impair",  {}),
-        "interest_expense":  xbrl.get("interest_expense", {}),
-        "lease_expense":     xbrl.get("lease_expense",    {}),
-        "long_term_debt":    xbrl.get("long_term_debt",   {}),
-        "preferred_div":     xbrl.get("preferred_div",    {}),
-        # Equity / OCI — for buried-loss and retained-earnings analysis
-        "oci":               xbrl.get("oci",              {}),
-        "retained_earnings": xbrl.get("retained_earnings",{}),
-        "capitalized_sw":    xbrl.get("capitalized_sw",   {}),
 
-        # ── ROIC only (no XBRL equivalent) ──────────────────────────────────
-        # Operating income is more directly useful than pre-tax for coverage
-        # ratios (excludes non-operating items like interest and tax).
+        # ── Nonrecurring items — XBRL only ───────────────────────────────────
+        # Graham: strip these from operating results before averaging earnings.
+        "asset_sale_gains":  xbrl.get("asset_sale_gains",  {}),
+        "investment_gains":  xbrl.get("investment_gains",  {}),
+        "debt_extinguish":   xbrl.get("debt_extinguish",   {}),
+
+        # ── PP&E / D&A / intangibles — XBRL only ────────────────────────────
+        "gross_ppe":         xbrl.get("gross_ppe",         {}),
+        "depreciation":      xbrl.get("depreciation",      {}),
+        # Amortization of purchase-accounting intangibles — Graham says add back
+        # to earnings since it is a non-cash accounting artifact.
+        "amort_intangibles": xbrl.get("amort_intangibles", {}),
+        "intangibles":       xbrl.get("intangibles",       {}),
+        "goodwill":          xbrl.get("goodwill",          {}),
+        "goodwill_impair":   xbrl.get("goodwill_impair",   {}),
+        "capitalized_sw":    xbrl.get("capitalized_sw",    {}),
+
+        # ── Inventory / reserve quality — XBRL only ──────────────────────────
+        # LIFO reserve > 0 means company uses LIFO; in inflation this understates
+        # inventory value vs FIFO peers. Adjust when comparing companies.
+        "lifo_reserve":      xbrl.get("lifo_reserve",      {}),
+        "allow_doubtful":    xbrl.get("allow_doubtful",    {}),
+
+        # ── Capital structure & fixed charges — XBRL only ────────────────────
+        "interest_expense":  xbrl.get("interest_expense",  {}),
+        "lease_expense":     xbrl.get("lease_expense",     {}),
+        "long_term_debt":    xbrl.get("long_term_debt",    {}),
+        "preferred_div":     xbrl.get("preferred_div",     {}),
+
+        # ── Equity quality — XBRL only ───────────────────────────────────────
+        "oci":               xbrl.get("oci",               {}),
+        "retained_earnings": xbrl.get("retained_earnings", {}),
+
+        # ── ROIC only — not in XBRL ──────────────────────────────────────────
+        # Operating income: more reliable for coverage tests than pre-tax income
+        # (pre-tax is distorted by non-operating interest and investment items).
         "operating_income":  r_oi,
         "free_cash_flow":    r_fcf,
         "net_debt":          r_nd,
-        # Dilution / Owners' Earnings — from the OE tab calculations
+        # Market cap: required for Graham's Stock-Value Ratio (equity cushion ÷ debt).
+        "market_cap":        r_mktcap,
+        # Dilution / Owners' Earnings — same formula as the Owners' Earnings tab.
         "sbc":               r_sbc,
         "net_buybacks":      r_net_bb,
         "rsu_tax":           r_rsu,
@@ -895,35 +994,52 @@ def _fmt_xbrl_table(dataset):
     rows   = [header, "=" * len(header)]
 
     rows += section("── P&L & Cash Flow ─────────────────────────────────────────", [
-        ("revenue",         "Revenue"),
-        ("net_income",      "Net Income"),
-        ("pretax_income",   "Pre-tax Income"),
-        ("tax_expense",     "Tax Expense"),
-        ("operating_income","Operating Income"),
-        ("cfo",             "Cash from Operations"),
-        ("free_cash_flow",  "Free Cash Flow"),
+        ("revenue",          "Revenue"),
+        ("cogs",             "Cost of Goods Sold"),
+        ("net_income",       "Net Income (GAAP)"),
+        ("pretax_income",    "Pre-tax Income"),
+        ("tax_expense",      "Tax Expense"),
+        ("operating_income", "Operating Income [ROIC]"),
+        ("cfo",              "Cash from Operations"),
+        ("free_cash_flow",   "Free Cash Flow [ROIC]"),
     ])
-    rows += section("── Balance Sheet ────────────────────────────────────────────", [
-        ("accounts_rec",    "Accounts Receivable"),
-        ("gross_ppe",       "Gross PP&E"),
-        ("depreciation",    "D&A"),
-        ("intangibles",     "Intangible Assets"),
-        ("goodwill",        "Goodwill"),
-        ("goodwill_impair", "Goodwill Impairments"),
-        ("interest_expense","Interest Expense"),
-        ("lease_expense",   "Lease/Rental Expense"),
-        ("long_term_debt",  "Long-Term Debt"),
-        ("net_debt",        "Net Debt"),
-        ("preferred_div",   "Preferred Dividends"),
-        ("oci",             "OCI (net)"),
+    rows += section("── Nonrecurring Items (strip from normalized earnings) ───────", [
+        ("asset_sale_gains", "Gains: Asset Sales"),
+        ("investment_gains", "Gains: Investments"),
+        ("debt_extinguish",  "Gains: Debt Extinguishment"),
+        ("goodwill_impair",  "Goodwill Impairments"),
+    ])
+    rows += section("── PP&E, D&A & Intangibles ──────────────────────────────────", [
+        ("gross_ppe",        "Gross PP&E"),
+        ("depreciation",     "Total D&A"),
+        ("amort_intangibles","Amort. of Intangibles"),
+        ("capitalized_sw",   "Capitalized Software"),
+        ("intangibles",      "Intangible Assets (net)"),
+        ("goodwill",         "Goodwill"),
+    ])
+    rows += section("── Inventory & Reserve Quality ──────────────────────────────", [
+        ("inventory",        "Inventory"),
+        ("lifo_reserve",     "LIFO Reserve (0=FIFO)"),
+        ("accounts_rec",     "Accounts Receivable"),
+        ("allow_doubtful",   "Allowance: Doubtful Accts"),
+    ])
+    rows += section("── Capital Structure & Fixed Charges ────────────────────────", [
+        ("interest_expense", "Interest Expense"),
+        ("lease_expense",    "Lease/Rental Expense"),
+        ("long_term_debt",   "Long-Term Debt"),
+        ("net_debt",         "Net Debt [ROIC]"),
+        ("preferred_div",    "Preferred Dividends"),
+        ("market_cap",       "Market Cap [ROIC: P×Sh]"),
+    ])
+    rows += section("── Equity Quality (OCI / Retained Earnings) ─────────────────", [
+        ("oci",              "OCI (net)"),
         ("retained_earnings","Retained Earnings"),
-        ("capitalized_sw",  "Capitalized Software"),
     ])
-    rows += section("── Owners' Earnings & Dilution ──────────────────────────────", [
-        ("sbc",             "Stock-Based Compensation"),
-        ("net_buybacks",    "Net Buybacks"),
-        ("rsu_tax",         "RSU Tax Withholdings"),
-        ("owners_earnings", "Owners' Earnings"),
+    rows += section("── Owners' Earnings & Dilution [ROIC] ───────────────────────", [
+        ("sbc",              "Stock-Based Compensation"),
+        ("net_buybacks",     "Net Buybacks"),
+        ("rsu_tax",          "RSU Tax Withholdings"),
+        ("owners_earnings",  "Owners' Earnings"),
     ])
 
     return "\n".join(rows)
@@ -945,64 +1061,100 @@ def _fmt_notes_signals(signals_by_year):
 
 @st.cache_data(ttl=3600, show_spinner=False)
 def generate_forensic_report(company, ticker, xbrl_table, notes_summary, api_key):
-    """Pass 2: Full Graham forensic synthesis."""
+    """
+    Pass 2: Full Graham / Dodd / Buffett forensic synthesis.
+
+    The prompt is the user's exact specification. The data table (~5-7 KB) +
+    notes signals (~3 KB) fits well within the model's 128K context window.
+    max_tokens=32000 gives room for the full scratchpad + five report sections.
+    """
     prompt = f"""SYSTEM ROLE:
-You are a strict, quantitative security analyst and forensic auditor, operating on the principles of Benjamin Graham and David Dodd. Your job is to extract the mathematical truth of a company's earning power and financial integrity — cutting through accounting noise to tell an investor exactly what is really going on.
+You are an elite, quantitative security analyst and forensic auditor, operating exclusively on the principles laid out by Benjamin Graham, David Dodd, and Warren Buffett. You do not accept Wall Street's simplified metrics (like EBITDA) or the modern obsession with a single "earnings per share" figure. Your job is to extract the mathematical truth of a company's earning power and financial safety. You must systematically dismantle the reported income account and balance sheet to unmask corporate chicanery, while also recognizing and validating conservative, transparent accounting practices.
 
 YOUR DIRECTIVE:
-Analyze the last 5 years of financial data for {company} ({ticker}). Systematically dismantle the reported income account and recalculate true economic reality using the forensic tests below. Where Graham refers to the "Surplus Account," scrutinize Retained Earnings and Accumulated OCI for buried losses.
+You will analyze the last 5 to 10 years of financial statements (provided below) to absorb and equalize the distorting influences of the business cycle. You must calculate the true economic reality of the business using Graham's strict quantitative tests. You will actively search for hidden data, misleading reporting tactics, "watered" assets, and reserve manipulation.
 
-EXECUTION STEPS (perform all calculations in the scratchpad):
+Translation Directive: You must aggressively map Graham's 1930s terminology to modern GAAP/IFRS. When Graham refers to the "Surplus Account," you must scrutinize modern "Retained Earnings" and "Accumulated Other Comprehensive Income" (OCI) for buried operating losses.
 
-1. Tax-Accrual Sanity Check: Calculate implied taxable profit from tax accrued (Tax Expense ÷ effective rate). Compare with reported pre-tax income. Flag wide divergences.
+STRICT DATA RULES:
+- Only use numbers from the data tables provided below.
+- If a row shows "n/a" for every year, write "DATA INSUFFICIENT — not reported in XBRL/ROIC" and skip that sub-test. Do not guess or extrapolate.
+- If a row shows n/a for some years but has data for others, use only the years with data.
+- Rows tagged [ROIC] are from ROIC fundamentals; all others are from EDGAR XBRL.
 
-2. Normalizing the Income Account: Strip nonrecurrent items. Average any extraordinary write-downs over the full period, even if buried below the line or in equity. Compare Owners' Earnings to GAAP Net Income — a persistent gap signals SBC or buyback distortion.
+EXECUTION STEPS & FORENSIC TESTS:
 
-3. Total-Deductions Coverage: Combine interest expense + preferred dividends + one-third of annual lease/rental expense. Calculate coverage ratio against operating income (use the "Operating Income" row, which is more reliable than pre-tax for this test).
+1. The Tax-Accrual vs. Published Report Sanity Check:
+   Do not accept reported income at face value. Compute implied taxable income = Tax Expense ÷ statutory rate (use 21% for US companies post-2018, 35% pre-2018). Compare to Pre-tax Income. A large unexplained gap is a red flag. Note any "development expense trick" signals from the notes.
 
-4. Debt-to-Equity Safety: Calculate equity cushion vs long-term debt. Also check net debt (long-term debt minus cash proxied by net debt figure provided).
+2. Normalizing the Income Account:
+   Strip all nonrecurrent items from ordinary operating results.
+   - Deduct: asset sale gains, investment gains, debt extinguishment gains (all provided in the Nonrecurring Items section).
+   - Add back: goodwill impairments averaged over the period as an operating charge.
+   - Stock-Based Compensation: Treat as a full hard expense. The Owners' Earnings figure already incorporates this; compare it to GAAP NI.
+   - Intangible Amortization: Per Graham, reverse the amortization of purchased "customer relationships" and forced goodwill via purchase-accounting — these are non-cash accounting artifacts. Add "Amort. of Intangibles" back to earnings when computing true earning power.
+   - Compute the 5-year average normalized earnings.
 
-5. Depreciation Manipulation: Calculate implied depreciation rate (D&A ÷ Gross PP&E) each year. If the rate drops without justification, recalculate using the historical average and note the earnings inflation.
+3. Inventory Valuation (LIFO vs. FIFO):
+   Use the LIFO Reserve column. If LIFO Reserve = 0 or n/a, the company likely uses FIFO. In an inflationary environment, FIFO creates illusory inventory profits — note this risk. If the LIFO reserve is large and growing, LIFO inventory is understated vs replacement cost.
 
-6. Forensic Red Flags:
-   a. Earnings Quality — NI vs CFO vs Free Cash Flow: All three should trend together. Persistent NI > CFO > FCF gaps indicate accrual manipulation or heavy capex that isn't converting to cash.
-   b. Capitalizing Operating Expenses: Check for intangible/capitalized software spikes alongside NI/CFO divergence.
-   c. Revenue Front-Running: If Accounts Receivable grows significantly faster than Revenue over multiple years, note the implied earnings quality risk.
-   d. Owners' Earnings vs GAAP: Compare the provided Owners' Earnings figure (NI + SBC − net buybacks − RSU tax) to GAAP NI. A large persistent gap means the equity compensation programme materially erodes shareholder returns beyond what GAAP reports.
-   e. Dilution Check: Rising SBC and RSU tax withholdings relative to net buybacks indicate net equity dilution even when the company reports buybacks.
-   f. Pension Return Fictions: If assumed return on plan assets is disclosed and appears disconnected from current bond yields, flag the illusionary profit component.
-   g. Off-Balance Sheet (SPVs/VIEs): Note any guaranteed obligations or unconsolidated entities that should be considered.
+4. Unmasking "Watered Stock" and Depreciation Maneuvers:
+   Calculate the implied depreciation rate = Total D&A ÷ Gross PP&E for each year.
+   If the rate drops materially without explanation (e.g. extending useful lives), recalculate earnings using the highest historical rate and show the earnings inflation.
+   Also check Capitalized Software spikes — if growing faster than revenue, it is likely an operating-expense capitalization maneuver.
 
-REQUIRED OUTPUT FORMAT:
+5. Scrutinizing Reserves:
+   Using the notes signals: assess whether contingency/warranty reserves are transparently classified (Chrysler-style direct deduction from the asset, strict current-liability classification) or vaguely defined "appropriated surplus." Vague reserves are a manipulation tool.
 
-First, open a <forensic_scratchpad> block. Show all raw numbers pulled from the data, step-by-step arithmetic for each test above. Where a variable is missing write "DATA INSUFFICIENT — [reason]" and move on. Do not ask questions. Do not speculate about why data is absent.
+6. The Total-Deductions Method (never use Prior-Deductions):
+   Fixed charges = Interest Expense + (1/3 × Lease/Rental Expense) + Preferred Dividends.
+   Coverage ratio = Operating Income [ROIC] ÷ Fixed Charges.
+   Graham minimum: 3× for industrials, 4× for utilities/preferred. Report the exact ratio each year and the 5-year average.
 
-Then write a Forensic Analysis Report — written in plain English for a sophisticated but non-technical investor. The report must explain what each finding actually means in practice, not just state a number. Structure it as:
+7. The Stock-Value Ratio (Graham's equity cushion test):
+   Equity cushion = Market Cap [ROIC: P×Sh] ÷ Long-Term Debt.
+   Graham requires: market value of stock ≥ total funded debt (ratio ≥ 1.0×).
+   Compute this for each year available.
 
-## Earnings Quality
-Explain whether reported earnings are a reliable measure of the company's true earning power. Cover normalized earnings, the tax sanity check result, and NI vs CFO divergence. Write at least 3 substantial paragraphs.
+8. Forensic Detection of Modern Shenanigans:
+   a. NI vs CFO vs FCF: All three should trend together. Flag persistent NI > CFO > FCF gaps.
+   b. Revenue Front-Running: Track AR growth vs Revenue growth year-over-year. If AR consistently grows faster, adjust earning power downward proportionally and explain the risk.
+   c. Capitalizing Operating Expenses: Flag spikes in Capitalized Software or Intangible Assets alongside NI/CFO divergence.
+   d. Owners' Earnings vs GAAP NI: SBC + RSU tax is the real dilution cost. Show the gap between Owners' Earnings and GAAP NI each year.
+   e. Off-Balance Sheet (SPVs/VIEs): Use the notes signals. Mathematically consolidate any guaranteed debt back onto the balance sheet before computing coverage ratios.
+   f. Pension Return Fictions: If pension assumed return % (from notes) appears disconnected from discount rate or current bond yields, flag the illusionary profit and estimate its magnitude if the data allows.
+   g. OCI / Retained Earnings Buried Losses: Check if OCI is consistently negative and cumulative — this may represent real economic losses buried below the income line.
 
-## Accounting Integrity
-Explain what the notes to the financial statements reveal. Cover any policy changes, unusual capitalizations, changes in useful life estimates, or revenue recognition concerns. Write at least 2 substantial paragraphs.
+REQUIRED WORKFLOW & OUTPUT FORMAT:
 
-## Balance Sheet & Debt Safety
-Explain the company's debt position, coverage ratios, and whether the balance sheet has been obscured by off-balance sheet items or operating lease commitments. Write at least 2 substantial paragraphs.
+Phase 1: <forensic_scratchpad>
+Open a <forensic_scratchpad> block. For every test above: copy the raw numbers from the table, show step-by-step arithmetic, state "DATA INSUFFICIENT — [exact reason]" where a row is all n/a. Do not ask questions. Do not invent numbers.
 
-## Red Flags & Anomalies
-Summarise the most important discrepancies found — depreciation manipulation, buried OCI losses, receivables front-running, pension fictions, or auditor qualifications. If none were found, say so explicitly and explain why the data is clean. Write at least 2 substantial paragraphs.
+Phase 2: The Forensic Analysis Report — plain English for a sophisticated investor.
+
+## Executive Summary & Management Integrity
+A harsh, unvarnished assessment of management's accounting integrity. Note specifically: do they use transparent Chrysler-style reserve accounting? Do they disclose insured property values in footnotes? Do they engage in obfuscation via aggressive capitalization or vague reserves?
+
+## True Owner Earnings
+Restated income stripping EBITDA nonsense, adjusting for LIFO/FIFO distortions, fixing tax-vs-reported discrepancies, treating SBC as an expense, adding back purchase-accounting intangible amortization, removing nonrecurring items. Show the 5-year average normalized earning power vs reported GAAP NI.
+
+## Quantitative Safety Tests
+Exact math for: Total-Deductions Interest Coverage (explicitly showing the 1/3 rentals inclusion), and the Stock-Value Ratio. State whether Graham's minimums are met each year.
+
+## Forensic Discrepancies
+Detailed documentation of: depreciation rate trends, NI/CFO/FCF divergence, hidden charges to OCI/Surplus, "watered" assets, arbitrary contingency reserves, SPVs, channel stuffing signals, or revenue front-running. If the data is clean on a specific test, say so explicitly.
 
 ## Summary
-A concise 1-paragraph summary of the overall picture: is this a company with transparent, reliable financials, or are there material concerns an investor must investigate further? Do not comment on valuation.
+One paragraph: is this a company with transparent, reliable financials, or are there material concerns an investor must investigate further? Reference the 5-year average normalized earnings and the safety test results.
 
-=== 5-YEAR QUANTITATIVE DATA ===
-Sources: EDGAR XBRL (preferred) with ROIC fundamentals as fallback.
-Operating Income, Free Cash Flow, Net Debt, SBC, Net Buybacks, RSU Tax Withholdings,
-and Owners' Earnings are from ROIC (already loaded — same data as the other tabs).
+=== QUANTITATIVE DATA ({company} — {ticker}) ===
+Sources: rows tagged [ROIC] = ROIC fundamentals already loaded; all others = EDGAR XBRL.
+n/a = not reported; do not substitute or guess.
 
 {xbrl_table}
 
-=== NOTES TO FINANCIAL STATEMENTS — FORENSIC SIGNALS (5 YEARS) ===
-{notes_summary if notes_summary else "Not available (non-US filer or EDGAR fetch failed)."}"""
+=== NOTES TO FINANCIAL STATEMENTS — FORENSIC SIGNALS ===
+{notes_summary if notes_summary else "Not available (non-US filer or EDGAR fetch failed — skip all qualitative note tests and state DATA INSUFFICIENT for each)."}"""
 
     return _call_nvidia([{"role": "user", "content": prompt}], api_key, max_tokens=32000)
 
@@ -2814,8 +2966,14 @@ else:
                 # from ROIC series using the same formula as the Owners' Earnings tab.
                 _dataset   = build_forensic_dataset(
                     _xbrl, years, bs_years,
-                    rev_s, ni_s, oi_s, cfo_s, fcf_s,
-                    ar_s, nd_s, sbc_s, incr_cap_s, decr_cap_s, rsu_tax_s,
+                    # Income-statement & cash-flow (all aligned to `years`)
+                    rev_s, ni_s, oi_s, cfo_s, fcf_s, cogs_s,
+                    # Balance-sheet (ar_s, inv_s use bs_years)
+                    ar_s, inv_s, nd_s,
+                    # Dilution series
+                    sbc_s, incr_cap_s, decr_cap_s, rsu_tax_s,
+                    # For market-cap computation (Stock-Value Ratio)
+                    price_s, shares_s,
                 )
                 _data_table = _fmt_xbrl_table(_dataset)
 
