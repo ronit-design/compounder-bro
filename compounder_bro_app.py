@@ -542,12 +542,22 @@ def fetch_rsu_tax_xbrl(ticker):
 
 # ── Forensic Accounting ────────────────────────────────────────────────────────
 
-def edgar_list_filings(cik, form_type, n=5):
-    """Return list of (accession_no_dashes, filing_date, report_year) for the last n filings."""
+@st.cache_data(ttl=86400, show_spinner=False)
+def edgar_list_annual_filings(cik, n=5):
+    """
+    Return the last n annual filings (10-K or 20-F) for a given CIK.
+
+    Makes a single HTTP request to the EDGAR submissions JSON, which contains
+    all filing history. Both 10-K and 20-F are accepted so the same function
+    works for US domestic and foreign-private issuers.
+
+    Returns list of (accession_no_dashes, filing_date, report_year), newest first.
+    Cached for 24 h — filing history changes at most once a year.
+    """
     try:
-        hdrs = {"User-Agent": "compounder-app research@example.com"}
-        r = requests.get(f"https://data.sec.gov/submissions/CIK{cik}.json",
-                         headers=hdrs, timeout=15)
+        hdrs    = {"User-Agent": "compounder-app research@example.com"}
+        r       = requests.get(f"https://data.sec.gov/submissions/CIK{cik}.json",
+                               headers=hdrs, timeout=15)
         r.raise_for_status()
         recent   = r.json().get("filings", {}).get("recent", {})
         forms    = recent.get("form", [])
@@ -555,15 +565,16 @@ def edgar_list_filings(cik, form_type, n=5):
         dates    = recent.get("filingDate", [])
         rptdates = recent.get("reportDate", dates)
         results  = []
+        annual_forms = {"10-K", "10-K/A", "20-F", "20-F/A"}
         for i, form in enumerate(forms):
-            if form in (form_type, form_type + "/A"):
+            if form in annual_forms:
                 rpt         = rptdates[i] if i < len(rptdates) else dates[i]
                 report_year = str(rpt)[:4] if rpt else str(dates[i])[:4]
                 results.append((accnums[i].replace("-", ""), dates[i], report_year))
             if len(results) >= n:
                 break
         return results
-    except:
+    except Exception:
         return []
 
 
@@ -742,45 +753,179 @@ NOTES (FY{fiscal_year}):
         return {}
 
 
-def _fmt_xbrl_table(xbrl):
-    """Format XBRL forensic data as a clean text table (values in $B or %)."""
-    if not xbrl:
-        return "XBRL data unavailable."
-    all_years = set()
-    for v in xbrl.values():
+def build_forensic_dataset(xbrl, years, bs_years,
+                            rev_s, ni_s, oi_s, cfo_s, fcf_s,
+                            ar_s, nd_s, sbc_s, incr_cap_s, decr_cap_s, rsu_tax_s):
+    """
+    Build a unified forensic dataset — zero extra API calls.
+
+    Merges two data sources that are already in memory:
+      - EDGAR XBRL  : preferred for D&A, taxes, OCI, retained earnings, debt,
+                      goodwill — concepts the ROIC API does not expose.
+      - ROIC series : already fetched for every tab; used as fallback for core
+                      P&L / cash-flow metrics and to add OE / dilution data.
+
+    XBRL wins when it has data; ROIC fills the gap when it doesn't.
+
+    Returns: dict of {metric_key: {year_str: value_float_or_None}}
+    """
+
+    def _to_dict(series, year_labels, n=5):
+        """
+        Convert a pandas Series + matching year-label list to a
+        {year_str: value} dict for the last n periods.
+        Values that are NaN / None are stored as None so the formatter
+        can print "n/a" cleanly.
+        """
+        pairs = list(zip([str(y)[:4] for y in year_labels], series.tolist()))
+        return {
+            yr: (float(v) if pd.notna(v) and v is not None else None)
+            for yr, v in pairs[-n:]
+        }
+
+    def _merge(xbrl_data, roic_data):
+        """Use XBRL if it returned anything; fall back to ROIC."""
+        return xbrl_data if xbrl_data else roic_data
+
+    # ── ROIC series → year-keyed dicts ──────────────────────────────────────
+    # Income-statement and cash-flow series are aligned to `years` (length n).
+    r_rev  = _to_dict(rev_s,     years)
+    r_ni   = _to_dict(ni_s,      years)
+    r_oi   = _to_dict(oi_s,      years)   # operating income — better than pre-tax for coverage tests
+    r_cfo  = _to_dict(cfo_s,     years)
+    r_fcf  = _to_dict(fcf_s,     years)
+    r_sbc  = _to_dict(sbc_s,     years)
+    r_nd   = _to_dict(nd_s,      years)
+    r_rsu  = _to_dict(rsu_tax_s, years)
+
+    # Balance-sheet series use bs_years (may differ in length from income statement)
+    r_ar   = _to_dict(ar_s, bs_years)
+
+    # Net buybacks = cash spent repurchasing shares − cash received from issuances.
+    # Both stored as positive values in ROIC; a positive result means net capital
+    # returned to shareholders.
+    net_bb = [
+        (abs(d) if pd.notna(d) else 0.0) - (abs(i) if pd.notna(i) else 0.0)
+        for d, i in zip(decr_cap_s.tolist(), incr_cap_s.tolist())
+    ]
+    r_net_bb = _to_dict(pd.Series(net_bb, dtype=float), years)
+
+    # Owners' Earnings = NI + SBC − net_buybacks − RSU_tax_withholdings.
+    # This is the true cash cost of running the equity programme.
+    oe_vals = []
+    for yr in sorted(r_ni):
+        ni_v  = r_ni.get(yr)  or 0.0
+        sbc_v = r_sbc.get(yr) or 0.0
+        bb_v  = r_net_bb.get(yr) or 0.0
+        rsu_v = r_rsu.get(yr) or 0.0
+        oe_vals.append((yr, ni_v + abs(sbc_v) - bb_v - abs(rsu_v)))
+    r_oe = {yr: v for yr, v in oe_vals}
+
+    return {
+        # ── XBRL preferred / ROIC fallback (core P&L + cash flow) ───────────
+        "net_income":        _merge(xbrl.get("net_income",    {}), r_ni),
+        "revenue":           _merge(xbrl.get("revenue",       {}), r_rev),
+        "accounts_rec":      _merge(xbrl.get("accounts_rec",  {}), r_ar),
+        "cfo":               _merge(xbrl.get("cfo",           {}), r_cfo),
+
+        # ── XBRL only (not available in ROIC) ───────────────────────────────
+        # Tax data — needed for Tax-Accrual Sanity Check
+        "pretax_income":     xbrl.get("pretax_income",    {}),
+        "tax_expense":       xbrl.get("tax_expense",      {}),
+        # Balance-sheet / capital structure
+        "gross_ppe":         xbrl.get("gross_ppe",        {}),
+        "depreciation":      xbrl.get("depreciation",     {}),
+        "intangibles":       xbrl.get("intangibles",      {}),
+        "goodwill":          xbrl.get("goodwill",         {}),
+        "goodwill_impair":   xbrl.get("goodwill_impair",  {}),
+        "interest_expense":  xbrl.get("interest_expense", {}),
+        "lease_expense":     xbrl.get("lease_expense",    {}),
+        "long_term_debt":    xbrl.get("long_term_debt",   {}),
+        "preferred_div":     xbrl.get("preferred_div",    {}),
+        # Equity / OCI — for buried-loss and retained-earnings analysis
+        "oci":               xbrl.get("oci",              {}),
+        "retained_earnings": xbrl.get("retained_earnings",{}),
+        "capitalized_sw":    xbrl.get("capitalized_sw",   {}),
+
+        # ── ROIC only (no XBRL equivalent) ──────────────────────────────────
+        # Operating income is more directly useful than pre-tax for coverage
+        # ratios (excludes non-operating items like interest and tax).
+        "operating_income":  r_oi,
+        "free_cash_flow":    r_fcf,
+        "net_debt":          r_nd,
+        # Dilution / Owners' Earnings — from the OE tab calculations
+        "sbc":               r_sbc,
+        "net_buybacks":      r_net_bb,
+        "rsu_tax":           r_rsu,
+        "owners_earnings":   r_oe,
+    }
+
+
+def _fmt_xbrl_table(dataset):
+    """
+    Format the merged forensic dataset as a plain-text table for the AI prompt.
+    Values in $B. Rows are grouped: core P&L, balance sheet, then OE/dilution.
+    n/a is printed where data is absent so the model knows not to invent numbers.
+    """
+    if not dataset:
+        return "No quantitative data available."
+
+    # Collect all years present across all metrics, use the last 5
+    all_years: set[str] = set()
+    for v in dataset.values():
         if isinstance(v, dict):
             all_years.update(v.keys())
     years = sorted(all_years)[-5:]
 
     def fv(val):
-        if val is None: return "    n/a"
-        return f"{val/1e9:>7.2f}B"
+        """Format a USD value as $B with 2 decimal places, or n/a."""
+        if val is None:
+            return "    n/a"
+        return f"{val / 1e9:>7.2f}B"
 
-    labels = {
-        "revenue":          "Revenue",
-        "net_income":       "Net Income",
-        "pretax_income":    "Pre-tax Income",
-        "tax_expense":      "Tax Expense",
-        "cfo":              "Cash from Operations",
-        "accounts_rec":     "Accounts Receivable",
-        "gross_ppe":        "Gross PP&E",
-        "depreciation":     "D&A",
-        "intangibles":      "Intangible Assets",
-        "goodwill":         "Goodwill",
-        "goodwill_impair":  "Goodwill Impairments",
-        "interest_expense": "Interest Expense",
-        "lease_expense":    "Lease/Rental Expense",
-        "long_term_debt":   "Long-Term Debt",
-        "preferred_div":    "Preferred Dividends",
-        "oci":              "OCI (net)",
-        "retained_earnings":"Retained Earnings",
-        "capitalized_sw":   "Capitalized Software",
-    }
-    header = f"{'Metric':<24} " + "  ".join(f"{y:>9}" for y in years)
-    rows   = [header, "-" * len(header)]
-    for key, lbl in labels.items():
-        series = xbrl.get(key, {})
-        rows.append(f"{lbl:<24} " + "  ".join(fv(series.get(y)) for y in years))
+    def section(title, keys_labels):
+        """Render a labeled section of rows."""
+        rows = [f"\n{title}"]
+        for key, lbl in keys_labels:
+            series = dataset.get(key, {})
+            rows.append(f"  {lbl:<26}" + "  ".join(fv(series.get(y)) for y in years))
+        return rows
+
+    header = f"{'Metric':<28} " + "  ".join(f"{y:>9}" for y in years)
+    rows   = [header, "=" * len(header)]
+
+    rows += section("── P&L & Cash Flow ─────────────────────────────────────────", [
+        ("revenue",         "Revenue"),
+        ("net_income",      "Net Income"),
+        ("pretax_income",   "Pre-tax Income"),
+        ("tax_expense",     "Tax Expense"),
+        ("operating_income","Operating Income"),
+        ("cfo",             "Cash from Operations"),
+        ("free_cash_flow",  "Free Cash Flow"),
+    ])
+    rows += section("── Balance Sheet ────────────────────────────────────────────", [
+        ("accounts_rec",    "Accounts Receivable"),
+        ("gross_ppe",       "Gross PP&E"),
+        ("depreciation",    "D&A"),
+        ("intangibles",     "Intangible Assets"),
+        ("goodwill",        "Goodwill"),
+        ("goodwill_impair", "Goodwill Impairments"),
+        ("interest_expense","Interest Expense"),
+        ("lease_expense",   "Lease/Rental Expense"),
+        ("long_term_debt",  "Long-Term Debt"),
+        ("net_debt",        "Net Debt"),
+        ("preferred_div",   "Preferred Dividends"),
+        ("oci",             "OCI (net)"),
+        ("retained_earnings","Retained Earnings"),
+        ("capitalized_sw",  "Capitalized Software"),
+    ])
+    rows += section("── Owners' Earnings & Dilution ──────────────────────────────", [
+        ("sbc",             "Stock-Based Compensation"),
+        ("net_buybacks",    "Net Buybacks"),
+        ("rsu_tax",         "RSU Tax Withholdings"),
+        ("owners_earnings", "Owners' Earnings"),
+    ])
+
     return "\n".join(rows)
 
 
@@ -811,19 +956,22 @@ EXECUTION STEPS (perform all calculations in the scratchpad):
 
 1. Tax-Accrual Sanity Check: Calculate implied taxable profit from tax accrued (Tax Expense ÷ effective rate). Compare with reported pre-tax income. Flag wide divergences.
 
-2. Normalizing the Income Account: Strip nonrecurrent items. Average any extraordinary write-downs over the full period, even if buried below the line or in equity.
+2. Normalizing the Income Account: Strip nonrecurrent items. Average any extraordinary write-downs over the full period, even if buried below the line or in equity. Compare Owners' Earnings to GAAP Net Income — a persistent gap signals SBC or buyback distortion.
 
-3. Total-Deductions Coverage: Combine interest expense + preferred dividends + one-third of annual lease/rental expense. Calculate coverage ratio against normalized operating income.
+3. Total-Deductions Coverage: Combine interest expense + preferred dividends + one-third of annual lease/rental expense. Calculate coverage ratio against operating income (use the "Operating Income" row, which is more reliable than pre-tax for this test).
 
-4. Debt-to-Equity Safety: Calculate equity cushion vs total funded debt (long-term debt).
+4. Debt-to-Equity Safety: Calculate equity cushion vs long-term debt. Also check net debt (long-term debt minus cash proxied by net debt figure provided).
 
 5. Depreciation Manipulation: Calculate implied depreciation rate (D&A ÷ Gross PP&E) each year. If the rate drops without justification, recalculate using the historical average and note the earnings inflation.
 
 6. Forensic Red Flags:
-   a. Capitalizing Operating Expenses: Flag persistent NI vs CFO divergence. Check for intangible/capitalized software spikes.
-   b. Revenue Front-Running: If Accounts Receivable grows significantly faster than Revenue over multiple years, note the implied earnings quality risk.
-   c. Pension Return Fictions: If assumed return on plan assets is disclosed and appears disconnected from current bond yields, flag the illusionary profit component.
-   d. Off-Balance Sheet (SPVs/VIEs): Note any guaranteed obligations or unconsolidated entities that should be considered.
+   a. Earnings Quality — NI vs CFO vs Free Cash Flow: All three should trend together. Persistent NI > CFO > FCF gaps indicate accrual manipulation or heavy capex that isn't converting to cash.
+   b. Capitalizing Operating Expenses: Check for intangible/capitalized software spikes alongside NI/CFO divergence.
+   c. Revenue Front-Running: If Accounts Receivable grows significantly faster than Revenue over multiple years, note the implied earnings quality risk.
+   d. Owners' Earnings vs GAAP: Compare the provided Owners' Earnings figure (NI + SBC − net buybacks − RSU tax) to GAAP NI. A large persistent gap means the equity compensation programme materially erodes shareholder returns beyond what GAAP reports.
+   e. Dilution Check: Rising SBC and RSU tax withholdings relative to net buybacks indicate net equity dilution even when the company reports buybacks.
+   f. Pension Return Fictions: If assumed return on plan assets is disclosed and appears disconnected from current bond yields, flag the illusionary profit component.
+   g. Off-Balance Sheet (SPVs/VIEs): Note any guaranteed obligations or unconsolidated entities that should be considered.
 
 REQUIRED OUTPUT FORMAT:
 
@@ -846,11 +994,15 @@ Summarise the most important discrepancies found — depreciation manipulation, 
 ## Summary
 A concise 1-paragraph summary of the overall picture: is this a company with transparent, reliable financials, or are there material concerns an investor must investigate further? Do not comment on valuation.
 
-=== 5-YEAR QUANTITATIVE DATA (USD) ===
+=== 5-YEAR QUANTITATIVE DATA ===
+Sources: EDGAR XBRL (preferred) with ROIC fundamentals as fallback.
+Operating Income, Free Cash Flow, Net Debt, SBC, Net Buybacks, RSU Tax Withholdings,
+and Owners' Earnings are from ROIC (already loaded — same data as the other tabs).
+
 {xbrl_table}
 
 === NOTES TO FINANCIAL STATEMENTS — FORENSIC SIGNALS (5 YEARS) ===
-{notes_summary}"""
+{notes_summary if notes_summary else "Not available (non-US filer or EDGAR fetch failed)."}"""
 
     return _call_nvidia([{"role": "user", "content": prompt}], api_key, max_tokens=32000)
 
@@ -2618,110 +2770,152 @@ else:
 
     # TAB 7 — Forensic Accounting
     with tab7:
-        _is_non_us = bool(__import__("re").search(r"[.][A-Z]{1,4}$", ticker.upper()))
+        import re as _re_fa
+
+        # Non-US tickers (e.g. CSU.TO, RYAAY) have no SEC EDGAR filings.
+        # We still run the quantitative ROIC-only analysis but skip the Item 8 notes pass.
+        _is_non_us = bool(_re_fa.search(r"[.][A-Z]{1,4}$", ticker.upper()))
 
         st.markdown(
             '<div style="font-size:0.82rem;color:#555;margin-bottom:1rem;line-height:1.6">'
-            'Runs a Benjamin Graham / David Dodd forensic analysis: Tax-Accrual Sanity Check, '
-            'Depreciation Manipulation, Total-Deductions Coverage, Stock-Value Ratio, '
-            'Off-Balance Sheet SPVs/VIEs, Revenue Front-Running, and Pension Return Fictions. '
-            'Requires SEC EDGAR data — US-listed tickers only. Takes ~60–90 seconds.</div>',
+            'Benjamin Graham / David Dodd forensic analysis: Tax-Accrual Sanity Check, '
+            'Depreciation Manipulation, Total-Deductions Coverage, Debt Safety, '
+            'Off-Balance Sheet SPVs/VIEs, Revenue Front-Running, Owners\' Earnings quality. '
+            'Quantitative data from ROIC (already loaded) + EDGAR XBRL. '
+            'Notes analysis requires SEC EDGAR — US tickers only. Takes ~60–90 seconds.</div>',
             unsafe_allow_html=True,
         )
 
-        if _is_non_us:
-            st.info(f"**{ticker}** is a non-US ticker. Forensic analysis requires SEC EDGAR filings and is only available for US-listed stocks.")
-        else:
-            _fa_key = f"forensic_report_{ticker}"
-            _run_btn = st.button("Generate Forensic Report", key="btn_forensic")
+        _fa_key  = f"forensic_report_{ticker}"
+        _run_btn = st.button("Generate Forensic Report", key="btn_forensic")
 
-            if _run_btn or _fa_key in st.session_state:
-                if _run_btn:
-                    # Clear cached result so we re-run
-                    st.session_state.pop(_fa_key, None)
+        if _run_btn or _fa_key in st.session_state:
+            if _run_btn:
+                # User clicked re-run — clear cached result for this ticker
+                st.session_state.pop(_fa_key, None)
 
-                if _fa_key not in st.session_state:
-                    _fa_progress = st.progress(0, text="Step 1 / 12 — Fetching XBRL quantitative data…")
+            if _fa_key not in st.session_state:
+                # ── Total steps: XBRL(1) + notes fetch per year(5) + Pass-1 per year(5) + Pass-2(1) = 12
+                # Non-US: notes fetch and Pass-1 are skipped → 2 steps total.
+                _total_steps = 12 if not _is_non_us else 2
+                _fa_progress = st.progress(0, text="Step 1 — Fetching XBRL quantitative data…")
 
-                    # Step 1 — XBRL
-                    _xbrl = fetch_forensic_xbrl(ticker)
-                    _xbrl_table = _fmt_xbrl_table(_xbrl)
-                    _fa_progress.progress(1 / 12, text="Step 1 / 12 — XBRL data fetched.")
+                # ── Step 1: XBRL ────────────────────────────────────────────────────
+                # fetch_forensic_xbrl is cached (ttl 1 h), so subsequent tab switches
+                # are instant. For non-US tickers it returns {} immediately.
+                _xbrl = fetch_forensic_xbrl(ticker)
+                _fa_progress.progress(1 / _total_steps, text="Step 1 — XBRL fetched. Merging with ROIC data…")
 
-                    # Steps 2–6 — fetch Item 8 notes for each of the last 5 annual filings
-                    _cik = edgar_get_cik(ticker)
-                    _filings_10k = edgar_list_filings(_cik, "10-K", n=5) if _cik else []
-                    _filings_20f = edgar_list_filings(_cik, "20-F", n=5) if _cik else []
-                    _filings_all = sorted(_filings_10k + _filings_20f, key=lambda x: x[1], reverse=True)[:5]
+                # ── Merge XBRL with already-loaded ROIC series (zero extra API calls) ──
+                # All series (rev_s, ni_s, oi_s, cfo_s, etc.) are already in memory
+                # from the data-loading block at the top of this page. We pass them
+                # directly into build_forensic_dataset, which prefers XBRL where it has
+                # data and falls back to ROIC for gaps. OE / dilution metrics are derived
+                # from ROIC series using the same formula as the Owners' Earnings tab.
+                _dataset   = build_forensic_dataset(
+                    _xbrl, years, bs_years,
+                    rev_s, ni_s, oi_s, cfo_s, fcf_s,
+                    ar_s, nd_s, sbc_s, incr_cap_s, decr_cap_s, rsu_tax_s,
+                )
+                _data_table = _fmt_xbrl_table(_dataset)
 
-                    _notes_raw = {}   # year -> notes text
-                    for _step_i, (_acc, _fdate, _yr) in enumerate(_filings_all):
+                # ── Steps 2–11: EDGAR Item 8 notes (US tickers only) ────────────────
+                _notes_summary = ""
+                if not _is_non_us:
+                    _cik      = edgar_get_cik(ticker)    # cached in edgar_get_cik
+                    # Single HTTP request returns both 10-K and 20-F filings
+                    _filings  = edgar_list_annual_filings(_cik, n=5) if _cik else []
+
+                    # Steps 2–6: fetch Item 8 HTML per filing year (each call is cached)
+                    _notes_raw: dict[str, str | None] = {}
+                    for _si, (_acc, _fdate, _yr) in enumerate(_filings):
                         _fa_progress.progress(
-                            (_step_i + 2) / 12,
-                            text=f"Step {_step_i + 2} / 12 — Fetching Item 8 notes for FY{_yr}…",
+                            (_si + 2) / _total_steps,
+                            text=f"Step {_si + 2} / {_total_steps} — Fetching Item 8 notes FY{_yr}…",
                         )
                         _notes_raw[_yr] = edgar_fetch_item8_notes(_cik, _acc)
 
-                    # Steps 7–11 — Pass 1 extraction (one NVIDIA call per year)
-                    _nvidia_key = st.secrets.get("NVIDIA_API_KEY", "")
-                    _signals_by_year = {}
-                    for _step_i, (_yr, _ntxt) in enumerate(sorted(_notes_raw.items())):
+                    # Steps 7–11: Pass 1 — one NVIDIA call per year extracts a
+                    # compact JSON of qualitative forensic signals (~700 tokens each).
+                    # This keeps each call well within the model's context window.
+                    _nvidia_key      = st.secrets.get("NVIDIA_API_KEY", "")
+                    _signals_by_year: dict[str, dict] = {}
+                    for _si, (_yr, _ntxt) in enumerate(sorted(_notes_raw.items())):
                         _fa_progress.progress(
-                            (_step_i + 7) / 12,
-                            text=f"Step {_step_i + 7} / 12 — Extracting forensic signals for FY{_yr}…",
+                            (_si + 7) / _total_steps,
+                            text=f"Step {_si + 7} / {_total_steps} — Extracting signals FY{_yr}…",
                         )
-                        if _ntxt:
-                            _signals_by_year[_yr] = forensic_notes_extract(_ntxt, _yr, company, _nvidia_key)
-                        else:
-                            _signals_by_year[_yr] = {}
-
+                        _signals_by_year[_yr] = (
+                            forensic_notes_extract(_ntxt, _yr, company, _nvidia_key)
+                            if _ntxt else {}
+                        )
                     _notes_summary = _fmt_notes_signals(_signals_by_year)
+                else:
+                    # Non-US: skip notes, only quantitative analysis runs
+                    _nvidia_key = st.secrets.get("NVIDIA_API_KEY", "")
 
-                    # Step 12 — Pass 2 synthesis
-                    _fa_progress.progress(12 / 12, text="Step 12 / 12 — Generating Graham forensic report…")
-                    _forensic_text = generate_forensic_report(company, ticker, _xbrl_table, _notes_summary, _nvidia_key)
+                # ── Step 12 (or 2 for non-US): Pass 2 — full Graham synthesis ───────
+                # The data table (~3–4 KB) + notes summary (~3 KB) fits comfortably
+                # within the model's context. One API call produces the full report.
+                _fa_progress.progress(1.0, text="Final step — Generating forensic report…")
+                _forensic_text = generate_forensic_report(
+                    company, ticker, _data_table, _notes_summary, _nvidia_key,
+                )
 
-                    _fa_progress.empty()
-                    st.session_state[_fa_key] = {
-                        "report":        _forensic_text,
-                        "xbrl_table":    _xbrl_table,
-                        "notes_summary": _notes_summary,
-                    }
+                _fa_progress.empty()
+                # Cache result in session state so switching tabs doesn't re-run
+                st.session_state[_fa_key] = {
+                    "report":      _forensic_text,
+                    "data_table":  _data_table,
+                    "notes_summary": _notes_summary,
+                }
 
-                _fa_result = st.session_state[_fa_key]
-                _fa_text   = _fa_result["report"]
+            # ── Display ─────────────────────────────────────────────────────────────
+            _fa_result = st.session_state[_fa_key]
+            _fa_text   = _fa_result["report"]
 
-                # Split scratchpad from final verdict
-                import re as _re_fa
-                _sp_match = _re_fa.search(r"<forensic_scratchpad>([\s\S]*?)</forensic_scratchpad>", _fa_text, _re_fa.IGNORECASE)
-                _verdict   = _re_fa.sub(r"<forensic_scratchpad>[\s\S]*?</forensic_scratchpad>", "", _fa_text, flags=_re_fa.IGNORECASE).strip()
+            # Split the model's <forensic_scratchpad>…</forensic_scratchpad> block
+            # from the reader-facing report. The scratchpad contains raw arithmetic;
+            # the remainder is structured markdown for the investor.
+            _sp_match = _re_fa.search(
+                r"<forensic_scratchpad>([\s\S]*?)</forensic_scratchpad>",
+                _fa_text, _re_fa.IGNORECASE,
+            )
+            _report_body = _re_fa.sub(
+                r"<forensic_scratchpad>[\s\S]*?</forensic_scratchpad>", "",
+                _fa_text, flags=_re_fa.IGNORECASE,
+            ).strip()
 
-                if _sp_match:
-                    with st.expander("Forensic Scratchpad (raw calculations)", expanded=False):
-                        st.markdown(
-                            f'<pre style="font-size:0.72rem;line-height:1.5;white-space:pre-wrap">'
-                            f'{_sp_match.group(1).strip()}</pre>',
-                            unsafe_allow_html=True,
-                        )
-
-                st.markdown("---")
-                _report_display = (_verdict if _verdict else _fa_text).replace("$", r"\$")
-                st.markdown(_report_display)
-                st.markdown("---")
-
-                # Supporting data expanders
-                with st.expander("XBRL Quantitative Data", expanded=False):
+            # Scratchpad — collapsed by default; available for verification
+            if _sp_match:
+                with st.expander("Forensic Scratchpad (raw calculations)", expanded=False):
                     st.markdown(
-                        f'<pre style="font-size:0.72rem;line-height:1.5">{_fa_result["xbrl_table"]}</pre>',
+                        f'<pre style="font-size:0.72rem;line-height:1.5;white-space:pre-wrap">'
+                        f'{_sp_match.group(1).strip()}</pre>',
                         unsafe_allow_html=True,
                     )
-                with st.expander("Notes Signals (Pass 1 extraction)", expanded=False):
+
+            st.markdown("---")
+            # Escape bare $ signs to prevent Streamlit's LaTeX renderer from
+            # treating currency amounts like $4.2B as math expressions.
+            _report_display = (_report_body or _fa_text).replace("$", r"\$")
+            st.markdown(_report_display)
+            st.markdown("---")
+
+            # Supporting data expanders — for users who want to verify the inputs
+            with st.expander("Quantitative Data Table (XBRL + ROIC)", expanded=False):
+                st.markdown(
+                    f'<pre style="font-size:0.72rem;line-height:1.5">{_fa_result["data_table"]}</pre>',
+                    unsafe_allow_html=True,
+                )
+            if _fa_result["notes_summary"]:
+                with st.expander("Notes Signals — Pass 1 extraction (US only)", expanded=False):
                     st.markdown(
                         f'<pre style="font-size:0.72rem;line-height:1.5">{_fa_result["notes_summary"]}</pre>',
                         unsafe_allow_html=True,
                     )
-            else:
-                st.markdown('<div style="color:#ccc;font-size:0.8rem">Click Generate Forensic Report to begin.</div>', unsafe_allow_html=True)
+        else:
+            st.markdown('<div style="color:#ccc;font-size:0.8rem">Click Generate Forensic Report to begin.</div>', unsafe_allow_html=True)
 
     # TAB 8 — Research Report
     with tab8:
