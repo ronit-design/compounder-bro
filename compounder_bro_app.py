@@ -2757,6 +2757,7 @@ else:
         # ── Annual dilution rate (shares outstanding YoY % change) ───────────
         # pct_change() naturally yields NaN for the first row and for any gap.
         sh_s     = pd.to_numeric(shares_s, errors="coerce").reset_index(drop=True)
+        sh_list  = sh_s.tolist()   # plain list used by downstream chart code
         dil_list = [None] + [
             None if pd.isna(v) else float(v)
             for v in (sh_s.pct_change() * 100).iloc[1:]
