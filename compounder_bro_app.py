@@ -606,13 +606,19 @@ def fetch_forensic_xbrl(ticker):
             "revenue":          get_annual(["Revenues", "RevenueFromContractWithCustomerExcludingAssessedTax", "SalesRevenueNet"]),
             "accounts_rec":     get_annual(["AccountsReceivableNetCurrent", "ReceivablesNetCurrent"]),
             "cfo":              get_annual(["NetCashProvidedByUsedInOperatingActivities"]),
-            "gross_ppe":        get_annual(["PropertyPlantAndEquipmentGross"]),
-            "depreciation":     get_annual(["DepreciationDepletionAndAmortization", "DepreciationAndAmortization"]),
-            "intangibles":      get_annual(["FiniteLivedIntangibleAssetsNet", "IntangibleAssetsNetExcludingGoodwill"]),
+            "gross_ppe":        get_annual(["PropertyPlantAndEquipmentGross", "PropertyPlantAndEquipmentNet"]),
+            "depreciation":     get_annual(["DepreciationDepletionAndAmortization", "DepreciationAndAmortization",
+                                            "Depreciation", "DepreciationAmortizationAndAccretionNet",
+                                            "DepreciationNonproduction"]),
+            "intangibles":      get_annual(["FiniteLivedIntangibleAssetsNet", "IntangibleAssetsNetExcludingGoodwill",
+                                            "FiniteLivedIntangibleAssetsGross"]),
             "goodwill":         get_annual(["Goodwill"]),
             "goodwill_impair":  get_annual(["GoodwillImpairmentLoss"]),
-            "interest_expense": get_annual(["InterestExpense", "InterestAndDebtExpense"]),
-            "lease_expense":    get_annual(["OperatingLeaseExpense", "LeaseCost", "OperatingLeasesRentExpenseNet"]),
+            "interest_expense": get_annual(["InterestExpense", "InterestAndDebtExpense",
+                                            "InterestExpenseDebt", "InterestPaidNet",
+                                            "InterestCostsIncurred"]),
+            "lease_expense":    get_annual(["OperatingLeaseExpense", "LeaseCost", "OperatingLeasesRentExpenseNet",
+                                            "OperatingLeaseCost"]),
             "long_term_debt":   get_annual(["LongTermDebt", "LongTermDebtNoncurrent"]),
             "preferred_div":    get_annual(["DividendsPreferredStock", "PreferredStockDividendsAndOtherAdjustments"]),
             "oci":              get_annual(["OtherComprehensiveIncomeLossNetOfTax"]),
@@ -679,13 +685,14 @@ def edgar_fetch_item8_notes(cik, accession_no_dashes, max_chars=14000):
 
         # Collect forensically-relevant note sections
         note_patterns = [
-            r"(?i)(summary\s+of\s+significant\s+accounting\s+policies|significant\s+accounting\s+policies)",
-            r"(?i)(revenue\s+recognition)",
-            r"(?i)(variable\s+interest\s+entit|off[\s\-]balance[\s\-]sheet|unconsolidated\s+(joint\s+venture|entit))",
-            r"(?i)(pension|defined\s+benefit|retirement\s+benefit)",
-            r"(?i)(goodwill\s+and\s+(intangible|other)|intangible\s+assets\s+and\s+goodwill|useful\s+li(fe|ves))",
-            r"(?i)(commitments\s+and\s+contingencies|legal\s+proceedings\s+and\s+contingencies)",
-            r"(?i)(operating\s+lease|right[\s\-]of[\s\-]use)",
+            r"(?i)(summary\s+of\s+significant\s+accounting\s+policies|significant\s+accounting\s+policies|basis\s+of\s+presentation)",
+            r"(?i)(revenue\s+recognition|disaggregation\s+of\s+revenue|contract\s+(assets|liabilities))",
+            r"(?i)(variable\s+interest\s+entit|off[\s\-]balance[\s\-]sheet|unconsolidated\s+(joint\s+venture|entit)|special\s+purpose)",
+            r"(?i)(pension|defined\s+benefit|retirement\s+benefit|postretirement)",
+            r"(?i)(goodwill\s+and\s+(intangible|other)|intangible\s+assets|useful\s+li(fe|ves)|amortization\s+period)",
+            r"(?i)(commitments\s+and\s+contingencies|legal\s+proceedings|purchase\s+obligations|contractual\s+obligations)",
+            r"(?i)(operating\s+lease|right[\s\-]of[\s\-]use|finance\s+lease)",
+            r"(?i)(stock[\s\-]based\s+compensation|share[\s\-]based|equity\s+(award|plan|compensation))",
         ]
 
         chunks, used = [], []
@@ -820,7 +827,7 @@ EXECUTION STEPS (perform all calculations in the scratchpad):
 
 REQUIRED OUTPUT FORMAT:
 
-First, open a <forensic_scratchpad> block. Show all raw numbers pulled from the data, step-by-step arithmetic for each test above, and write "DATA INSUFFICIENT" where a variable is missing. Be explicit with every calculation.
+First, open a <forensic_scratchpad> block. Show all raw numbers pulled from the data, step-by-step arithmetic for each test above. Where a variable is missing write "DATA INSUFFICIENT — [reason]" and move on. Do not ask questions. Do not speculate about why data is absent.
 
 Then write a Forensic Analysis Report — written in plain English for a sophisticated but non-technical investor. The report must explain what each finding actually means in practice, not just state a number. Structure it as:
 
