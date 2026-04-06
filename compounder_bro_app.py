@@ -379,6 +379,9 @@ def fetch_annual_average_prices(ticker, dates_series):
     if not val_col:
         return pd.Series([None] * len(dates_series))
         
+    # ── THE FIX: Force the price column to be numeric so we can calculate the mean ──
+    prices[val_col] = pd.to_numeric(prices[val_col], errors="coerce")
+        
     avg_prices = []
     for d in dates_series:
         if pd.isna(d):
@@ -390,7 +393,8 @@ def fetch_annual_average_prices(ticker, dates_series):
         mask = (prices.index > start_date) & (prices.index <= end_date)
         period_prices = prices.loc[mask, val_col]
         
-        if not period_prices.empty:
+        # Only calculate mean if the period has valid numeric data
+        if not period_prices.empty and not period_prices.isna().all():
             avg_prices.append(float(period_prices.mean()))
         else:
             avg_prices.append(None)
