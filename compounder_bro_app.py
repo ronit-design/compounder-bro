@@ -2409,8 +2409,10 @@ else:
         for i in range(len(years)):
             ni  = ni_list[i]
             oe  = oe_list[i]
-            sh_curr = sh_vals[i]   if (i < len(sh_vals) and sh_vals[i] and not pd.isna(sh_vals[i])) else None
-            sh_prev = sh_vals[i-1] if (i > 0 and sh_vals[i-1] and not pd.isna(sh_vals[i-1])) else sh_curr
+            
+            # ── THE FIX: Use sh_list instead of sh_vals ──
+            sh_curr = sh_list[i]   if (i < len(sh_list) and sh_list[i] and not pd.isna(sh_list[i])) else None
+            sh_prev = sh_list[i-1] if (i > 0 and sh_list[i-1] and not pd.isna(sh_list[i-1])) else sh_curr
 
             ni_ps_list.append(ni / sh_prev if (ni is not None and sh_prev) else None)
             oe_ps_list.append(oe / sh_curr if (oe is not None and sh_curr) else None)
